@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Monitor WIN — Tempo Real</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121820; --panel2:#0f141b; --line:#1e2833;
+    --txt:#c8d2dc; --dim:#6b7a89; --green:#2bd576; --red:#ff4d5e;
+    --amber:#f0b429; --blue:#4da3ff;
+    --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
+    --sans:"Segoe UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:var(--sans);min-height:100vh}
+  header{display:flex;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-family:var(--mono);font-size:22px;letter-spacing:2px;color:#fff}
+  header h1 span{color:var(--green)}
+  #contrato{font-family:var(--mono);font-size:12px;color:var(--amber);border:1px solid var(--line);padding:4px 10px;border-radius:6px}
+  .status{margin-left:auto;display:flex;gap:14px;align-items:center;font-family:var(--mono);font-size:12px;flex-wrap:wrap}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--red);display:inline-block;margin-right:6px;vertical-align:middle}
+  .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+  .dot.sim{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+  main{display:grid;grid-template-columns:150px 1fr 300px;gap:14px;padding:14px 20px;max-width:1280px;margin:0 auto}
+  @media(max-width:900px){main{grid-template-columns:1fr}.ladder-wrap{order:2}.right{order:3}}
+  .ladder-wrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 10px;position:relative}
+  .ladder-title{font-family:var(--mono);font-size:11px;color:var(--dim);text-align:center;margin-bottom:10px;letter-spacing:1px}
+  .ladder{position:relative;height:560px;margin:0 8px}
+  .rail{position:absolute;left:50%;top:0;bottom:0;width:2px;background:var(--line);transform:translateX(-50%)}
+  .lvl{position:absolute;left:0;right:0;transform:translateY(50%);display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px}
+  .lvl .tick{flex:1;height:1px;background:currentColor;opacity:.5}
+  .lvl.res{color:var(--green)} .lvl.sup{color:var(--red)}
+  .lvl b{white-space:nowrap}
+  .zone{position:absolute;left:8%;right:8%;background:rgba(240,180,41,.08);border-top:1px dashed var(--amber);border-bottom:1px dashed var(--amber)}
+  .vol-band{position:absolute;left:24%;right:24%;background:var(--blue);pointer-events:none;border-radius:1px}
+  .lvl.poc{color:var(--blue)}
+  .price-marker{position:absolute;left:-6px;right:-6px;transform:translateY(50%);transition:bottom .35s ease}
+  .price-marker .tag{position:absolute;left:50%;transform:translate(-50%,50%);background:#fff;color:#000;font-family:var(--mono);font-weight:700;font-size:13px;padding:2px 8px;border-radius:4px;white-space:nowrap;box-shadow:0 0 14px rgba(255,255,255,.35)}
+  .price-marker .lineflag{position:absolute;left:0;right:0;height:2px;background:#fff;opacity:.85}
+  .center{display:flex;flex-direction:column;gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+  .bigprice{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  .bigprice .px{font-family:var(--mono);font-size:52px;font-weight:700;color:#fff}
+  .bigprice .var{font-family:var(--mono);font-size:20px}
+  .up{color:var(--green)} .down{color:var(--red)} .flat{color:var(--dim)}
+  .bias{margin-top:8px;font-family:var(--mono);font-size:14px;padding:8px 12px;border-radius:6px;display:inline-block}
+  .bias.buy{background:rgba(43,213,118,.12);color:var(--green);border:1px solid rgba(43,213,118,.4)}
+  .bias.sell{background:rgba(255,77,94,.12);color:var(--red);border:1px solid rgba(255,77,94,.4)}
+  .bias.neutral{background:rgba(240,180,41,.10);color:var(--amber);border:1px solid rgba(240,180,41,.4)}
+  canvas{width:100%;height:180px;display:block}
+  .grid2{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:4px}
+  @media(max-width:600px){.grid2{grid-template-columns:repeat(2,1fr)}}
+  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px}
+  .stat .k{font-size:11px;color:var(--dim);letter-spacing:.5px}
+  .stat .v{font-family:var(--mono);font-size:18px;margin-top:4px;color:#fff}
+  .right{display:flex;flex-direction:column;gap:14px}
+  .card h3{font-size:12px;letter-spacing:1.5px;color:var(--dim);margin-bottom:10px;font-family:var(--mono)}
+  .dist{display:flex;justify-content:space-between;font-family:var(--mono);font-size:13px;padding:6px 0;border-bottom:1px dashed var(--line)}
+  .dist:last-child{border-bottom:none}
+  .dist.near{background:rgba(77,163,255,.12);border-radius:4px;padding-left:6px;padding-right:6px;border-bottom-style:solid}
+  .amber{color:var(--amber)}
+  #plano s{color:var(--dim);margin-right:4px}
+  .alerts{max-height:220px;overflow-y:auto;font-family:var(--mono);font-size:12px}
+  .alert-item{padding:7px 9px;border-radius:6px;margin-bottom:6px;background:var(--panel2);border-left:3px solid var(--blue)}
+  .alert-item.res{border-left-color:var(--green)} .alert-item.sup{border-left-color:var(--red)}
+  .alert-item.conf{border-left-color:var(--amber);background:rgba(240,180,41,.10);color:#ffe9b0;font-weight:700}
+  .alert-item.dive{border-left-color:var(--blue);background:rgba(77,163,255,.08)}
+  .alert-item time{color:var(--dim);margin-right:8px}
+  .btn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);font-family:var(--mono);font-size:12px;padding:7px 12px;border-radius:6px;cursor:pointer}
+  .btn:hover{border-color:var(--blue);color:#fff}
+  .btn:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+  .flash{animation:flash .6s ease 3}
+  @keyframes flash{0%,100%{box-shadow:none}50%{box-shadow:0 0 24px rgba(240,180,41,.8)}}
+  @media(prefers-reduced-motion:reduce){.price-marker{transition:none}.flash{animation:none}}
+  footer{text-align:center;color:var(--dim);font-size:11px;padding:14px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<header>
+  <h1>WIN<span> MONITOR</span></h1>
+  <span id="contrato">carregando níveis…</span>
+  <div class="status">
+    <span><span id="connDot" class="dot"></span><span id="connTxt">desconectado</span></span>
+    <span id="lastUpdate">--:--:--</span>
+    <button class="btn" id="btnSim">▶ Simulador</button>
+    <button class="btn" id="btnSound">🔔 Som: ON</button>
+  </div>
+</header>
+
+<main>
+  <div class="ladder-wrap">
+    <div class="ladder-title">RÉGUA DO PREGÃO</div>
+    <div class="ladder" id="ladder"><div class="rail"></div></div>
+  </div>
+
+  <div class="center">
+    <div class="card" id="priceCard">
+      <div class="bigprice">
+        <span class="px" id="px">—</span>
+        <span class="var flat" id="pxVar">+0 pts (0,00%)</span>
+      </div>
+      <div class="bias neutral" id="bias">⏳ Aguardando dados…</div>
+    </div>
+
+    <div class="card">
+      <h3>ÚLTIMOS TICKS</h3>
+      <canvas id="spark" width="800" height="180"></canvas>
+    </div>
+
+    <div class="grid2">
+      <div class="stat"><div class="k">ABERTURA</div><div class="v" id="stAbert">—</div></div>
+      <div class="stat"><div class="k">MÁXIMA</div><div class="v up" id="stMax">—</div></div>
+      <div class="stat"><div class="k">MÍNIMA</div><div class="v down" id="stMin">—</div></div>
+      <div class="stat"><div class="k">VOLUME</div><div class="v" id="stVol">—</div></div>
+      <div class="stat"><div class="k">AGR. COMPRA</div><div class="v up" id="stAgrC">—</div></div>
+      <div class="stat"><div class="k">AGR. VENDA</div><div class="v down" id="stAgrV">—</div></div>
+      <div class="stat"><div class="k">DELTA</div><div class="v" id="stDelta">—</div></div>
+      <div class="stat"><div class="k">VWAP</div><div class="v" id="stVwap">—</div></div>
+    </div>
+  </div>
+
+  <div class="right">
+    <div class="card">
+      <h3>DISTÂNCIA AOS NÍVEIS</h3>
+      <div id="distList"><div class="dist"><span class="flat">—</span></div></div>
+    </div>
+    <div class="card">
+      <h3>PLANO DO DIA</h3>
+      <div id="plano"></div>
+    </div>
+    <div class="card">
+      <h3>ALERTAS</h3>
+      <div class="alerts" id="alerts"><div class="alert-item"><time>—</time>Nenhum alerta ainda.</div></div>
+    </div>
+  </div>
+</main>
+<footer>Profit Pro RTD → Excel/VBA → CSV → FastAPI (porta 8001) → WebSocket · Ferramenta de estudo — não é recomendação de investimento.</footer>
+
+<script>
+/* ============ NÍVEIS: carregados do servidor (/niveis) ============ */
+let NIV = null;               // preenchido via fetch
+const API = location.protocol.startsWith("http") ? "" : "http://127.0.0.1:8001";
+const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") +
+               (location.host || "127.0.0.1:8001") + "/ws";
+
+const S = { ultimo:null, abertura:null, maxima:null, minima:null,
+            volume:null, agrC:null, agrV:null, vwap:null,
+            ticks:[], lastAlert:{}, soundOn:true, sim:null, ws:null };
+
+const $ = id => document.getElementById(id);
+const fmt = v => v==null ? "—" : Math.round(v).toLocaleString("pt-BR");
+
+async function loadNiveis(){
+  try{
+    const r = await fetch(API + "/niveis");
+    NIV = await r.json();
+  }catch(e){
+    // fallback local caso o server esteja fora
+    NIV = { contrato:"WIN", resistencias:[175110,175810,176510],
+            suportes:[174410,173710,173010],
+            alvos_compra:[175810,176510,177210],
+            alvos_venda:[173710,173010,172310],
+            zona_decisiva:{min:174400,max:175100},
+            ladder:{min:172310,max:177210} };
+  }
+  $("contrato").textContent = `${NIV.contrato||"WIN"} · ${NIV.data_pregao||""} · ${NIV.fonte||""}`;
+  LAD = { min: NIV.ladder.min, max: NIV.ladder.max };
+  buildLadder(); buildPlano(); render();
+  loadPerfil();
+}
+
+/* ============ PERFIL DE VOLUME (régua por acúmulo) ============ */
+let PERFIL = null;
+async function loadPerfil(){
+  if(!NIV || !NIV.data_pregao) return;
+  try{
+    const r = await fetch(API + "/perfil/" + NIV.data_pregao);
+    if(!r.ok) throw 0;
+    const p = await r.json();
+    PERFIL = (p.perfil && p.perfil.length) ? p : null;
+  }catch(e){ PERFIL = null; }   // server antigo (sem /perfil) ou sem dados
+  buildLadder();
+}
+setInterval(loadPerfil, 120000);   // perfil evolui ao longo do pregão
+
+/* ============ RÉGUA ============ */
+/* Range efetivo da régua: parte do ladder do JSON e SÓ expande quando o
+   preço sai dele (nunca encolhe no dia) — os níveis não ficam dançando. */
+let LAD = { min: 0, max: 1 };
+function pctInLadder(p){
+  return Math.min(100, Math.max(0, (p-LAD.min)/(LAD.max-LAD.min)*100));
+}
+function ensureLadderRange(p){
+  if(p==null || !NIV) return;
+  const margin = Math.max(200, (LAD.max-LAD.min)*0.03);
+  let changed = false;
+  if(p > LAD.max){ LAD.max = Math.ceil((p+margin)/5)*5; changed = true; }
+  if(p < LAD.min){ LAD.min = Math.floor((p-margin)/5)*5; changed = true; }
+  if(changed) buildLadder();
+}
+function buildLadder(){
+  const el = $("ladder");
+  el.innerHTML = '<div class="rail"></div>';
+  const z = document.createElement("div");
+  z.className = "zone";
+  z.style.bottom = pctInLadder(NIV.zona_decisiva.min) + "%";
+  z.style.height = (pctInLadder(NIV.zona_decisiva.max) - pctInLadder(NIV.zona_decisiva.min)) + "%";
+  el.appendChild(z);
+  // Faixas de calor: intensidade ∝ volume negociado em cada faixa de preço
+  if(PERFIL){
+    const maxPct = Math.max(...PERFIL.perfil.map(b=>b.pct));
+    PERFIL.perfil.forEach(b=>{
+      const lo = pctInLadder(b.preco - PERFIL.bucket/2);
+      const hi = pctInLadder(b.preco + PERFIL.bucket/2);
+      if(hi <= lo) return;
+      const d = document.createElement("div");
+      d.className = "vol-band";
+      d.style.bottom = lo + "%";
+      d.style.height = (hi-lo) + "%";
+      d.style.opacity = (0.05 + 0.32 * b.pct / maxPct).toFixed(3);
+      el.appendChild(d);
+    });
+  }
+  const add = (price, cls, label) => {
+    const d = document.createElement("div");
+    d.className = "lvl " + cls;
+    d.style.bottom = pctInLadder(price) + "%";
+    d.innerHTML = `<b>${fmt(price)}</b><span class="tick"></span><span>${label}</span>`;
+    el.appendChild(d);
+  };
+  NIV.resistencias.forEach((r,i)=>add(r,"res","R"+(i+1)));
+  NIV.suportes.forEach((s,i)=>add(s,"sup","S"+(i+1)));
+  const lastAC = NIV.alvos_compra[NIV.alvos_compra.length-1];
+  const lastAV = NIV.alvos_venda[NIV.alvos_venda.length-1];
+  if(!NIV.resistencias.includes(lastAC)) add(lastAC,"res","ALVO C");
+  if(!NIV.suportes.includes(lastAV))     add(lastAV,"sup","ALVO V");
+  if(PERFIL && PERFIL.poc != null) add(PERFIL.poc,"poc","POC");
+  const m = document.createElement("div");
+  m.className = "price-marker"; m.id = "marker"; m.style.bottom = "50%";
+  m.innerHTML = `<div class="lineflag"></div><div class="tag" id="markerTag">—</div>`;
+  el.appendChild(m);
+}
+function buildPlano(){
+  if(!NIV) return;
+  // Alvo atingido = máxima/mínima do dia tocou o nível (não usa o último,
+  // que perderia toques rápidos). Invalidação derivada da zona decisiva.
+  const hitC = a => S.maxima!=null && S.maxima >= a;
+  const hitV = a => S.minima!=null && S.minima <= a;
+  const alvos = (list, hit) =>
+    list.map(a => hit(a) ? `<s>${fmt(a)}</s>✅` : fmt(a)).join(" / ");
+  $("plano").innerHTML = `
+    <div class="dist"><span class="up">Compra acima</span><b>${fmt(NIV.zona_decisiva.max)} + vol</b></div>
+    <div class="dist"><span class="up">Alvos</span><b>${alvos(NIV.alvos_compra, hitC)}</b></div>
+    <div class="dist"><span class="up">Invalida</span><b>abaixo de ${fmt(NIV.zona_decisiva.min)}</b></div>
+    <div class="dist"><span class="down">Venda abaixo</span><b>${fmt(NIV.zona_decisiva.min)} + vol</b></div>
+    <div class="dist"><span class="down">Alvos</span><b>${alvos(NIV.alvos_venda, hitV)}</b></div>
+    <div class="dist"><span class="down">Invalida</span><b>acima de ${fmt(NIV.zona_decisiva.max)}</b></div>`;
+}
+
+/* ============ SOM ============ */
+let audioCtx = null;
+function beep(freq){
+  if(!S.soundOn) return;
+  try{
+    audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(.25, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001, audioCtx.currentTime + .5);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + .5);
+  }catch(e){}
+}
+
+/* ============ ALERTAS ============ */
+const COOLDOWN = 60000;
+function pushAlert(txt, cls){
+  const box = $("alerts");
+  const d = document.createElement("div");
+  d.className = "alert-item " + cls;
+  d.innerHTML = `<time>${new Date().toLocaleTimeString("pt-BR")}</time>${txt}`;
+  box.prepend(d);
+  while(box.children.length > 40) box.lastChild.remove();
+  $("priceCard").classList.remove("flash");
+  void $("priceCard").offsetWidth;
+  $("priceCard").classList.add("flash");
+}
+function checkCrossings(prev, cur){
+  if(prev==null || !NIV) return;
+  const now = Date.now();
+  const fire = (lvl, dir, cls, freq) => {
+    const key = dir + lvl;
+    if(now - (S.lastAlert[key]||0) < COOLDOWN) return;
+    S.lastAlert[key] = now;
+    pushAlert(`${dir==="up"?"⬆ ROMPEU":"⬇ PERDEU"} ${fmt(lvl)}`, cls);
+    beep(freq);
+  };
+  NIV.resistencias.concat([NIV.zona_decisiva.max]).forEach(l=>{
+    if(prev < l && cur >= l) fire(l,"up","res",880);
+  });
+  NIV.suportes.concat([NIV.zona_decisiva.min]).forEach(l=>{
+    if(prev > l && cur <= l) fire(l,"down","sup",440);
+  });
+}
+
+/* ============ BIAS / DISTÂNCIAS / SPARK ============ */
+function updateBias(){
+  if(!NIV) return;
+  const el = $("bias"), p = S.ultimo;
+  if(p==null) return;
+  const delta = (S.agrC!=null && S.agrV!=null) ? S.agrC - S.agrV : null;
+  const dTxt = delta==null ? "" : ` · Δ ${delta>=0?"+":""}${fmt(delta)}`;
+  if(p > NIV.zona_decisiva.max){
+    el.className = "bias buy";
+    el.textContent = `🐂 VIÉS COMPRADOR — acima de ${fmt(NIV.zona_decisiva.max)}${dTxt}`;
+  }else if(p < NIV.zona_decisiva.min){
+    el.className = "bias sell";
+    el.textContent = `🐻 VIÉS VENDEDOR — abaixo de ${fmt(NIV.zona_decisiva.min)}${dTxt}`;
+  }else{
+    el.className = "bias neutral";
+    el.textContent = `⚖ ZONA DECISIVA (${fmt(NIV.zona_decisiva.min)}–${fmt(NIV.zona_decisiva.max)}) — aguardar rompimento${dTxt}`;
+  }
+}
+function updateDist(){
+  if(!NIV) return;
+  const p = S.ultimo; if(p==null) return;
+  const rows = [];
+  // Regua de precos: R3 no topo ... S3 embaixo (zona decisiva no meio)
+  for(let i = NIV.resistencias.length-1; i >= 0; i--)
+    rows.push({label:`R${i+1} ${fmt(NIV.resistencias[i])}`, d:NIV.resistencias[i]-p, cls:"up"});
+  rows.push({label:`ZD↑ ${fmt(NIV.zona_decisiva.max)}`, d:NIV.zona_decisiva.max-p, cls:"amber"});
+  rows.push({label:`ZD↓ ${fmt(NIV.zona_decisiva.min)}`, d:NIV.zona_decisiva.min-p, cls:"amber"});
+  NIV.suportes.forEach((s,i)=>rows.push({label:`S${i+1} ${fmt(s)}`, d:s-p, cls:"down"}));
+  let nearest = 0;
+  rows.forEach((r,i)=>{ if(Math.abs(r.d) < Math.abs(rows[nearest].d)) nearest = i; });
+  $("distList").innerHTML = rows.map((r,i)=>
+    `<div class="dist${i===nearest?" near":""}"><span class="${r.cls}">${r.label}</span><b>${r.d>=0?"+":""}${fmt(r.d)} pts</b></div>`
+  ).join("");
+}
+function drawSpark(){
+  const c = $("spark"), ctx = c.getContext("2d");
+  ctx.clearRect(0,0,c.width,c.height);
+  const t = S.ticks; if(t.length < 2) return;
+  const min = Math.min(...t), max = Math.max(...t), pad = 12;
+  const x = i => pad + i*(c.width-2*pad)/(t.length-1);
+  const y = v => max===min ? c.height/2 : pad + (max-v)*(c.height-2*pad)/(max-min);
+  if(NIV){
+    [NIV.zona_decisiva.min, NIV.zona_decisiva.max].forEach(l=>{
+      if(l>=min && l<=max){
+        ctx.strokeStyle="rgba(240,180,41,.5)"; ctx.setLineDash([5,5]);
+        ctx.beginPath(); ctx.moveTo(pad,y(l)); ctx.lineTo(c.width-pad,y(l)); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    });
+  }
+  ctx.strokeStyle = t[t.length-1] >= t[0] ? "#2bd576" : "#ff4d5e";
+  ctx.lineWidth = 2; ctx.beginPath();
+  t.forEach((v,i)=> i ? ctx.lineTo(x(i),y(v)) : ctx.moveTo(x(i),y(v)));
+  ctx.stroke();
+}
+
+/* ============ RENDER ============ */
+function render(){
+  const p = S.ultimo; if(p==null) return;
+  $("px").textContent = fmt(p);
+  if(S.abertura){
+    const d = p - S.abertura, pct = (d/S.abertura*100).toFixed(2).replace(".",",");
+    const el = $("pxVar");
+    el.textContent = `${d>=0?"+":""}${fmt(d)} pts (${pct}%)`;
+    el.className = "var " + (d>0?"up":d<0?"down":"flat");
+  }
+  $("stAbert").textContent = fmt(S.abertura);
+  $("stMax").textContent = fmt(S.maxima);
+  $("stMin").textContent = fmt(S.minima);
+  $("stVol").textContent = fmt(S.volume);
+  $("stAgrC").textContent = fmt(S.agrC);
+  $("stAgrV").textContent = fmt(S.agrV);
+  const delta = (S.agrC!=null&&S.agrV!=null)? S.agrC-S.agrV : null;
+  const sd = $("stDelta");
+  sd.textContent = delta==null?"—":(delta>=0?"+":"")+fmt(delta);
+  sd.className = "v " + (delta>0?"up":delta<0?"down":"");
+  $("stVwap").textContent = fmt(S.vwap);
+  if(NIV && $("marker")){
+    ensureLadderRange(p);
+    $("marker").style.bottom = pctInLadder(p) + "%";
+    $("markerTag").textContent = fmt(p);
+  }
+  $("lastUpdate").textContent = new Date().toLocaleTimeString("pt-BR");
+  updateBias(); updateDist(); buildPlano(); drawSpark();
+}
+
+/* ============ INGESTÃO ============ */
+function onTick(data){
+  if(data.evento === "niveis_atualizados"){ loadNiveis(); return; }
+  if(data.evento === "confluencia"){
+    pushAlert("⭐ " + data.msg, "conf");
+    beep(1320); setTimeout(()=>beep(1320), 250);   // beep duplo agudo
+    return;
+  }
+  if(data.evento === "divergencia"){
+    pushAlert("⚠ " + data.msg, "dive");
+    beep(300);                                      // beep grave de aviso
+    return;
+  }
+  const prev = S.ultimo;
+  const g = k => (data[k]!==undefined && data[k]!==null) ? Number(data[k]) : null;
+  S.ultimo   = g("ultimo")     ?? S.ultimo;
+  S.abertura = g("abertura")   ?? S.abertura;
+  S.maxima   = g("maxima")     ?? S.maxima;
+  S.minima   = g("minima")     ?? S.minima;
+  S.volume   = g("volume")     ?? S.volume;
+  S.agrC     = g("agr_compra") ?? S.agrC;
+  S.agrV     = g("agr_venda")  ?? S.agrV;
+  S.vwap     = g("vwap")       ?? S.vwap;
+  if(S.ultimo!=null){
+    S.ticks.push(S.ultimo);
+    if(S.ticks.length > 300) S.ticks.shift();
+    checkCrossings(prev, S.ultimo);
+  }
+  render();
+}
+
+/* ============ WEBSOCKET ============ */
+function setConn(state, txt){
+  $("connDot").className = "dot " + (state==="on"?"on":state==="sim"?"sim":"");
+  $("connTxt").textContent = txt;
+}
+function connectWS(){
+  try{
+    S.ws = new WebSocket(WS_URL);
+    S.ws.onopen = () => setConn("on","conectado (WS)");
+    S.ws.onmessage = e => { try{ onTick(JSON.parse(e.data)); }catch(_){} };
+    S.ws.onclose = () => { setConn("off","reconectando…"); setTimeout(connectWS, 3000); };
+    S.ws.onerror = () => S.ws.close();
+  }catch(e){ setTimeout(connectWS, 3000); }
+}
+
+/* ============ SIMULADOR ============ */
+function toggleSim(){
+  if(S.sim){ clearInterval(S.sim); S.sim=null; $("btnSim").textContent="▶ Simulador"; setConn("off","desconectado"); return; }
+  let px = 174600, vol=0, ac=0, av=0;
+  const abert = 174800;
+  S.abertura = abert; S.maxima = px; S.minima = px;
+  setConn("sim","SIMULADOR");
+  $("btnSim").textContent = "⏹ Parar sim.";
+  S.sim = setInterval(()=>{
+    const drift = (Math.random()-.5)*60 + (Math.random()<.05 ? (Math.random()-.5)*250 : 0);
+    px = Math.round((px + drift)/5)*5;
+    vol += Math.round(Math.random()*80);
+    if(Math.random() > .48) ac += Math.round(Math.random()*50);
+    else av += Math.round(Math.random()*50);
+    S.maxima = Math.max(S.maxima??px, px);
+    S.minima = Math.min(S.minima??px, px);
+    onTick({ultimo:px, abertura:abert, maxima:S.maxima, minima:S.minima,
+            volume:vol, agr_compra:ac, agr_venda:av, vwap:abert + (ac-av)/10});
+  }, 900);
+}
+
+$("btnSim").onclick = toggleSim;
+$("btnSound").onclick = () => {
+  S.soundOn = !S.soundOn;
+  $("btnSound").textContent = "🔔 Som: " + (S.soundOn?"ON":"OFF");
+};
+
+loadNiveis();
+connectWS();
+</script>
+</body>
+</html>
