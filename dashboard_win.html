@@ -64,14 +64,11 @@
   .amber{color:var(--amber)}
   #plano s, #distList s{color:var(--dim);margin-right:4px}
   .hitflag{display:inline-block;font-size:11px;margin-left:4px}
-  .macro-big{font-family:var(--mono);font-size:30px;font-weight:700;color:#fff}
-  .macro-var{font-family:var(--mono);font-size:14px;margin-left:8px}
-  .macro-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:2px}
   .macro-row{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:13px;padding:7px 0;border-bottom:1px dashed var(--line);gap:6px}
   .macro-row:last-child{border-bottom:none}
   .macro-row .nome small{display:block;color:var(--dim);font-size:10px}
   .macro-row .seta{font-size:14px;width:20px;text-align:center;flex:none}
-  .align-banner{margin-top:10px;font-family:var(--mono);font-size:12px;padding:8px 10px;border-radius:6px}
+  .align-banner{margin:0 0 10px;font-family:var(--mono);font-size:12px;padding:8px 10px;border-radius:6px}
   .align-banner.fav{border:1px solid rgba(43,213,118,.45);background:rgba(43,213,118,.10);color:var(--green)}
   .align-banner.contra{border:1px solid rgba(255,77,94,.45);background:rgba(255,77,94,.10);color:var(--red)}
   .align-banner.misto{border:1px solid rgba(240,180,41,.45);background:rgba(240,180,41,.10);color:var(--amber)}
@@ -160,13 +157,8 @@
   <div class="right">
     <div class="card">
       <h3>MACRO — IMPACTO NO IBOV</h3>
-      <div id="macroHead" style="display:none">
-        <span class="macro-big" id="mBrentPx">—</span>
-        <span class="macro-var flat" id="mBrentVar"></span>
-        <div class="macro-sub" id="mBrentSub">BRENT (ICE · BZ=F)</div>
-      </div>
-      <div id="macroRows"><div class="dist"><span class="flat">Aguardando dados…</span></div></div>
       <div id="macroBanner"></div>
+      <div id="macroRows"><div class="dist"><span class="flat">Aguardando dados…</span></div></div>
     </div>
     <div class="card">
       <h3>DISTÂNCIA AOS NÍVEIS</h3>
@@ -421,15 +413,6 @@ function drawSpark(){
 const fmt2 = (v,d=2) => v==null ? "—" : v.toFixed(d).replace(".",",");
 function renderMacro(){
   if(!M.brent && !M.dolar && !M.di) return;
-  // Cabeçalho grande: Brent (referência visual do monitor PETR4)
-  if(M.brent){
-    $("macroHead").style.display = "";
-    $("mBrentPx").textContent = fmt2(M.brent.preco);
-    const v = M.brent.var_pct;
-    $("mBrentVar").textContent = `${v>=0?"+":""}${fmt2(v)}%`;
-    $("mBrentVar").className = "macro-var " + (v>0?"up":v<0?"down":"flat");
-    $("mBrentSub").textContent = `BRENT (ICE · BZ=F) · fech. ant. ${fmt2(M.brent.fech_ant)}`;
-  }
   // Impacto no IBOV: Brent↑ favorece (PETR4 7,8% do índice);
   // Dólar↓ e Juros↓ favorecem. Faixa morta evita ruído virar seta.
   const imp = [];   // +1 favorável, -1 contrário, 0 neutro
@@ -457,15 +440,26 @@ function renderMacro(){
       <b class="${v>0?"down":v<0?"up":"flat"}">${fmt2(M.di.taxa,3)}% ${v==null?"":(v>=0?"+":"")+fmt2(v,1)+" bps"}</b>${seta(s)}</div>`);
   }
   $("macroRows").innerHTML = rows.join("");
-  // Banner de alinhamento macro x WIN
+  // Selo de alinhamento (estilo monitor PETR4): direção do vento macro
+  // (maioria das setas) x direção do WIN (var vs FEC). Concordando,
+  // "Alinhados COMPRA/VENDA"; discordando, "Divergentes".
   const fav = imp.filter(s=>s>0).length, con = imp.filter(s=>s<0).length;
   const base = S.fecAnt ?? S.abertura;
-  const winTxt = (S.ultimo!=null && base)
-    ? ` · WIN ${S.ultimo>=base?"+":""}${((S.ultimo/base-1)*100).toFixed(2).replace(".",",")}%` : "";
+  const winVar = (S.ultimo!=null && base) ? (S.ultimo/base-1)*100 : null;
+  const winTxt = winVar==null ? "" :
+    ` · WIN ${winVar>=0?"+":""}${winVar.toFixed(2).replace(".",",")}%`;
+  const macroDir = fav>con ? 1 : con>fav ? -1 : 0;
+  const winDir = winVar==null ? 0 : winVar>0.05 ? 1 : winVar<-0.05 ? -1 : 0;
   let cls, txt;
-  if(fav && !con){ cls="fav";    txt=`✔ Vento macro FAVORÁVEL — ${fav}/${imp.length} a favor do índice`; }
-  else if(con && !fav){ cls="contra"; txt=`✖ Vento macro CONTRÁRIO — ${con}/${imp.length} contra o índice`; }
-  else { cls="misto"; txt=`◆ Vento macro MISTO — ${fav} a favor · ${con} contra`; }
+  if(macroDir===0 || winDir===0){
+    cls="misto"; txt=`◆ Vento macro ${macroDir>0?"a favor":macroDir<0?"contra":"misto"} — ${fav} a favor · ${con} contra`;
+  }else if(macroDir===winDir){
+    cls = macroDir>0 ? "fav" : "contra";
+    txt = `✔ Alinhados ${macroDir>0?"COMPRA":"VENDA"} — macro ${fav>con?fav:con}/${imp.length} ${macroDir>0?"a favor":"contra"}`;
+  }else{
+    cls="misto";
+    txt=`⚠ Divergentes — macro ${macroDir>0?"a favor":"contra"}, WIN na contramão`;
+  }
   $("macroBanner").innerHTML = `<div class="align-banner ${cls}">${txt}${winTxt}</div>`;
 }
 async function loadMacroInicial(){

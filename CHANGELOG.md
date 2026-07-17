@@ -23,6 +23,13 @@ Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
   (Brent↑, Dólar↓ e DI↓ favorecem) e banner de alinhamento
   favorável/contrário/misto com a variação do WIN (vs. FEC).
 
+### Selo de alinhamento no topo do card MACRO
+- O preço grande do Brent saiu do cabeçalho do card (segue na linha
+  dele); no lugar entrou o selo de viés estilo monitor PETR4:
+  ✔ Alinhados COMPRA (verde) / ✔ Alinhados VENDA (vermelho) /
+  ⚠ Divergentes / ◆ Vento macro misto — cruzando a maioria das setas
+  macro com a direção do WIN (var vs FEC, faixa morta ±0,05%).
+
 ### Layout: Alertas e Blue Chips na coluna central
 - Os cards Alertas e Blue Chips saíram da coluna direita para o espaço
   vazio abaixo dos stats na coluna central, lado a lado (`.row2`, grid
