@@ -23,6 +23,17 @@ Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
   (Brent↑, Dólar↓ e DI↓ favorecem) e banner de alinhamento
   favorável/contrário/misto com a variação do WIN (vs. FEC).
 
+### Plano: hora REAL de ativação do gatilho (servidor)
+- O `✅ ativado hh:mm` mostrava a hora em que a página abria e zerava no
+  F5 (estado só no navegador). Agora o servidor calcula a hora do
+  rompimento a partir dos snapshots do pregão (`plano_ativacao_sync`:
+  1º snapshot em que a máxima/mínima cruzou a ZD↑/ZD↓), transmite via WS
+  (`evento: plano_ativacao`), expõe em `GET /plano_ativacao` e envia no
+  connect. Sobrevive a F5 e a reinício do server no mesmo dia; reflete a
+  hora de mercado; recalcula sozinho se a zona decisiva mudar.
+- Dashboard usa `S.planoAtiv` do servidor (removida a lógica local
+  `trigC/trigV`); o simulador carimba localmente (sem servidor por trás).
+
 ### Macro: + DXY (dólar global) — estudo de correlação
 - Estudo de 1 ano de retornos diários vs IBOV (`corr_macro.py`): DXY
   r=−0,36 (mais forte que USD/BRL −0,24) e quase independente dele

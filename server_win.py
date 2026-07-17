@@ -573,6 +573,33 @@ class SnapshotDB:
         return {**base, "total": total, "poc": poc,
                 "va_min": ordered[i], "va_max": ordered[j], "perfil": perfil}
 
+    def plano_ativacao_sync(self, dia: str, zmin: Optional[float],
+                            zmax: Optional[float]) -> dict:
+        """Hora REAL em que o gatilho do plano foi ativado no pregao.
+
+        Compra ativa quando a maxima do dia alcanca a ZD-topo; venda
+        quando a minima alcanca a ZD-base. Como maxima/minima sao extremos
+        cumulativos (monotonicos), o primeiro snapshot em que ja haviam
+        cruzado marca o horario do rompimento (resolucao ~SNAPSHOT_EVERY).
+
+        Calculado dos snapshots -> sobrevive a F5 e a reinicio do server no
+        mesmo dia, e reflete o horario de mercado (nao o de carga da pagina).
+        Recalcula sozinho se a zona decisiva mudar (niveis refinados).
+        """
+        out = {"compra": None, "venda": None}
+        with sqlite3.connect(self.path) as con:
+            if zmax is not None:
+                r = con.execute(
+                    "SELECT MIN(ts) FROM snapshots WHERE dia=? AND maxima>=?",
+                    (dia, zmax)).fetchone()
+                out["compra"] = r[0] if r and r[0] else None
+            if zmin is not None:
+                r = con.execute(
+                    "SELECT MIN(ts) FROM snapshots WHERE dia=? AND minima<=?",
+                    (dia, zmin)).fetchone()
+                out["venda"] = r[0] if r and r[0] else None
+        return out
+
     def historico_sync(self, dia: str) -> dict:
         """Pacote completo de um pregao: OHLC, niveis, eventos e snapshots."""
         with sqlite3.connect(self.path) as con:
@@ -772,6 +799,7 @@ rtd_macro = RtdMacroReader(MACRO_RTD_CSV)
 last_tick: Optional[Tick] = None
 last_blue_chips: Optional[dict] = None
 last_macro: Optional[dict] = None
+last_plano_ativacao: Optional[dict] = None
 
 
 def atualizar_niveis_automaticos(force: bool = False) -> Optional[dict]:
@@ -820,7 +848,7 @@ def refinar_niveis_com_fec(fec: float) -> Optional[dict]:
 
 async def market_loop():
     """Loop principal: le CSV -> confluencia -> broadcast -> snapshot."""
-    global last_tick, last_blue_chips
+    global last_tick, last_blue_chips, last_plano_ativacao
     last_snapshot = 0.0
     loop = asyncio.get_running_loop()
     dia_atual = date.today()
@@ -862,6 +890,14 @@ async def market_loop():
                 last_snapshot = now
                 # NAO bloqueia o event loop (corrige debito do server_v2)
                 await loop.run_in_executor(None, db.save_sync, tick)
+                # Hora real de ativacao do gatilho do plano (dos snapshots).
+                zona = (levels.load().get("zona_decisiva") or {})
+                ativ = await loop.run_in_executor(
+                    None, db.plano_ativacao_sync, date.today().isoformat(),
+                    zona.get("min"), zona.get("max"))
+                if ativ != last_plano_ativacao:
+                    last_plano_ativacao = ativ
+                    await manager.broadcast({"evento": "plano_ativacao", **ativ})
         bc = blue_chips_reader.read_if_changed()
         if bc:
             positivas = sum(1 for a in bc if a["fluxo"] == "compra")
@@ -995,6 +1031,12 @@ async def get_blue_chips():
     return last_blue_chips or {"status": "aguardando dados"}
 
 
+@app.get("/plano_ativacao")
+async def get_plano_ativacao():
+    """Hora real de ativacao dos gatilhos de compra/venda do plano hoje."""
+    return last_plano_ativacao or {"compra": None, "venda": None}
+
+
 @app.get("/macro")
 async def get_macro():
     """Ultimo pacote macro (S&P 500, Dolar, DI) + idade do dado em segundos."""
@@ -1015,6 +1057,8 @@ async def ws_endpoint(ws: WebSocket):
         await ws.send_json(last_blue_chips)
     if last_macro:
         await ws.send_json(last_macro)
+    if last_plano_ativacao:
+        await ws.send_json({"evento": "plano_ativacao", **last_plano_ativacao})
     try:
         while True:
             await ws.receive_text()   # mantem a conexao viva

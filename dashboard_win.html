@@ -187,7 +187,7 @@ const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") +
 
 const S = { ultimo:null, abertura:null, maxima:null, minima:null,
             volume:null, agrC:null, agrV:null, vwap:null, fecAnt:null,
-            trigC:null, trigV:null,   // hora em que o gatilho do plano ativou
+            planoAtiv:{compra:null, venda:null},  // hora REAL do servidor
             ticks:[], lastAlert:{}, soundOn:true, sim:null, ws:null };
 const M = { sp500:null, dxy:null, dolar:null, di:null };   // último pacote macro
 
@@ -292,19 +292,15 @@ function buildPlano(){
   const hitV = a => S.minima!=null && S.minima <= a;
   const alvos = (list, hit) =>
     list.map(a => hit(a) ? `<s>${fmt(a)}</s>✅` : fmt(a)).join(" / ");
-  // Gatilho ativado = máxima/mínima cruzou a zona decisiva; guarda a hora
-  // do primeiro toque visto nesta sessão do navegador.
-  if(hitC(NIV.zona_decisiva.max) && !S.trigC)
-    S.trigC = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
-  if(hitV(NIV.zona_decisiva.min) && !S.trigV)
-    S.trigV = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
-  const gat = (ativo, hora) => ativo
-    ? ` <span class="hitflag">✅ ativado${hora ? " " + hora : ""}</span>` : "";
+  // Gatilho ativado: a hora vem do SERVIDOR (rompimento real dos snapshots,
+  // sobrevive a F5 e a reinício); só mostra ✅ quando o servidor confirma.
+  const gat = ts => ts
+    ? ` <span class="hitflag">✅ ativado ${ts.slice(0,5)}</span>` : "";
   $("plano").innerHTML = `
-    <div class="dist"><span class="up">Compra acima</span><b>${fmt(NIV.zona_decisiva.max)} + vol${gat(hitC(NIV.zona_decisiva.max), S.trigC)}</b></div>
+    <div class="dist"><span class="up">Compra acima</span><b>${fmt(NIV.zona_decisiva.max)} + vol${gat(S.planoAtiv.compra)}</b></div>
     <div class="dist"><span class="up">Alvos</span><b>${alvos(NIV.alvos_compra, hitC)}</b></div>
     <div class="dist"><span class="up">Invalida</span><b>abaixo de ${fmt(NIV.zona_decisiva.min)}</b></div>
-    <div class="dist"><span class="down">Venda abaixo</span><b>${fmt(NIV.zona_decisiva.min)} + vol${gat(hitV(NIV.zona_decisiva.min), S.trigV)}</b></div>
+    <div class="dist"><span class="down">Venda abaixo</span><b>${fmt(NIV.zona_decisiva.min)} + vol${gat(S.planoAtiv.venda)}</b></div>
     <div class="dist"><span class="down">Alvos</span><b>${alvos(NIV.alvos_venda, hitV)}</b></div>
     <div class="dist"><span class="down">Invalida</span><b>acima de ${fmt(NIV.zona_decisiva.max)}</b></div>`;
 }
@@ -484,6 +480,14 @@ async function loadMacroInicial(){
     if(d.evento === "macro"){ M.sp500=d.sp500; M.dxy=d.dxy; M.dolar=d.dolar; M.di=d.di; renderMacro(); }
   }catch(e){}
 }
+async function loadPlanoAtivInicial(){
+  try{
+    const r = await fetch(API + "/plano_ativacao");
+    const d = await r.json();
+    S.planoAtiv = {compra:d.compra ?? null, venda:d.venda ?? null};
+    if(NIV) buildPlano();
+  }catch(e){}
+}
 
 /* ============ RENDER ============ */
 function render(){
@@ -519,6 +523,11 @@ function render(){
 function onTick(data){
   if(data.evento === "niveis_atualizados"){ loadNiveis(); return; }
   if(data.evento === "blue_chips"){ renderBlueChips(data); return; }
+  if(data.evento === "plano_ativacao"){
+    S.planoAtiv = {compra:data.compra ?? null, venda:data.venda ?? null};
+    if(NIV) buildPlano();
+    return;
+  }
   if(data.evento === "macro"){
     M.sp500 = data.sp500 ?? M.sp500;
     M.dxy   = data.dxy   ?? M.dxy;
@@ -612,6 +621,7 @@ function toggleSim(){
   let px = 174600, vol=0, ac=0, av=0;
   const abert = 174800;
   S.abertura = abert; S.maxima = px; S.minima = px;
+  S.planoAtiv = {compra:null, venda:null};   // sem servidor no modo sim
   setConn("sim","SIMULADOR");
   $("btnSim").textContent = "⏹ Parar sim.";
   S.sim = setInterval(()=>{
@@ -622,6 +632,10 @@ function toggleSim(){
     else av += Math.round(Math.random()*50);
     S.maxima = Math.max(S.maxima??px, px);
     S.minima = Math.min(S.minima??px, px);
+    // No sim não há servidor: carimba a ativação localmente (hora atual).
+    const hhmm = new Date().toTimeString().slice(0,5);
+    if(NIV && S.maxima>=NIV.zona_decisiva.max && !S.planoAtiv.compra) S.planoAtiv.compra = hhmm;
+    if(NIV && S.minima<=NIV.zona_decisiva.min && !S.planoAtiv.venda)  S.planoAtiv.venda  = hhmm;
     onTick({ultimo:px, abertura:abert, maxima:S.maxima, minima:S.minima,
             volume:vol, agr_compra:ac, agr_venda:av, vwap:abert + (ac-av)/10});
   }, 900);
@@ -636,6 +650,7 @@ $("btnSound").onclick = () => {
 loadNiveis();
 loadBlueChipsInicial();
 loadMacroInicial();
+loadPlanoAtivInicial();
 connectWS();
 </script>
 </body>
