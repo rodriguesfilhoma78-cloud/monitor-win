@@ -55,12 +55,26 @@
   .stat .k{font-size:11px;color:var(--dim);letter-spacing:.5px}
   .stat .v{font-family:var(--mono);font-size:18px;margin-top:4px;color:#fff}
   .right{display:flex;flex-direction:column;gap:14px}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+  @media(max-width:900px){.row2{grid-template-columns:1fr}}
   .card h3{font-size:12px;letter-spacing:1.5px;color:var(--dim);margin-bottom:10px;font-family:var(--mono)}
   .dist{display:flex;justify-content:space-between;font-family:var(--mono);font-size:13px;padding:6px 0;border-bottom:1px dashed var(--line)}
   .dist:last-child{border-bottom:none}
   .dist.near{background:rgba(77,163,255,.12);border-radius:4px;padding-left:6px;padding-right:6px;border-bottom-style:solid}
   .amber{color:var(--amber)}
-  #plano s{color:var(--dim);margin-right:4px}
+  #plano s, #distList s{color:var(--dim);margin-right:4px}
+  .hitflag{display:inline-block;font-size:11px;margin-left:4px}
+  .macro-big{font-family:var(--mono);font-size:30px;font-weight:700;color:#fff}
+  .macro-var{font-family:var(--mono);font-size:14px;margin-left:8px}
+  .macro-sub{font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:2px}
+  .macro-row{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:13px;padding:7px 0;border-bottom:1px dashed var(--line);gap:6px}
+  .macro-row:last-child{border-bottom:none}
+  .macro-row .nome small{display:block;color:var(--dim);font-size:10px}
+  .macro-row .seta{font-size:14px;width:20px;text-align:center;flex:none}
+  .align-banner{margin-top:10px;font-family:var(--mono);font-size:12px;padding:8px 10px;border-radius:6px}
+  .align-banner.fav{border:1px solid rgba(43,213,118,.45);background:rgba(43,213,118,.10);color:var(--green)}
+  .align-banner.contra{border:1px solid rgba(255,77,94,.45);background:rgba(255,77,94,.10);color:var(--red)}
+  .align-banner.misto{border:1px solid rgba(240,180,41,.45);background:rgba(240,180,41,.10);color:var(--amber)}
   .alerts{max-height:220px;overflow-y:auto;font-family:var(--mono);font-size:12px}
   .alert-item{padding:7px 9px;border-radius:6px;margin-bottom:6px;background:var(--panel2);border-left:3px solid var(--blue)}
   .alert-item.res{border-left-color:var(--green)} .alert-item.sup{border-left-color:var(--red)}
@@ -118,9 +132,42 @@
       <div class="stat"><div class="k">DELTA</div><div class="v" id="stDelta">—</div></div>
       <div class="stat"><div class="k">VWAP</div><div class="v" id="stVwap">—</div></div>
     </div>
+
+    <div class="row2">
+      <div class="card">
+        <h3>ALERTAS</h3>
+        <div class="alerts" id="alerts"><div class="alert-item"><time>—</time>Nenhum alerta ainda.</div></div>
+      </div>
+      <div class="card">
+        <h3>BLUE CHIPS — FLUXO IBOVESPA</h3>
+        <table style="width:100%;font-family:var(--mono);font-size:12px;border-collapse:collapse">
+          <thead><tr style="color:var(--dim)">
+            <th style="text-align:left;padding:4px 0">Ativo</th>
+            <th style="text-align:right">Último</th>
+            <th style="text-align:right">Var%</th>
+            <th style="text-align:right">Peso</th>
+            <th style="text-align:right">Fluxo</th>
+          </tr></thead>
+          <tbody id="bcBody"><tr><td colspan="5" class="flat" style="padding:6px 0">Aguardando…</td></tr></tbody>
+        </table>
+        <div class="dist" style="margin-top:8px;border-bottom:none" id="bcBias">
+          <span class="flat">Aguardando dados…</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="right">
+    <div class="card">
+      <h3>MACRO — IMPACTO NO IBOV</h3>
+      <div id="macroHead" style="display:none">
+        <span class="macro-big" id="mBrentPx">—</span>
+        <span class="macro-var flat" id="mBrentVar"></span>
+        <div class="macro-sub" id="mBrentSub">BRENT (ICE · BZ=F)</div>
+      </div>
+      <div id="macroRows"><div class="dist"><span class="flat">Aguardando dados…</span></div></div>
+      <div id="macroBanner"></div>
+    </div>
     <div class="card">
       <h3>DISTÂNCIA AOS NÍVEIS</h3>
       <div id="distList"><div class="dist"><span class="flat">—</span></div></div>
@@ -128,10 +175,6 @@
     <div class="card">
       <h3>PLANO DO DIA</h3>
       <div id="plano"></div>
-    </div>
-    <div class="card">
-      <h3>ALERTAS</h3>
-      <div class="alerts" id="alerts"><div class="alert-item"><time>—</time>Nenhum alerta ainda.</div></div>
     </div>
   </div>
 </main>
@@ -145,8 +188,10 @@ const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") +
                (location.host || "127.0.0.1:8001") + "/ws";
 
 const S = { ultimo:null, abertura:null, maxima:null, minima:null,
-            volume:null, agrC:null, agrV:null, vwap:null,
+            volume:null, agrC:null, agrV:null, vwap:null, fecAnt:null,
+            trigC:null, trigV:null,   // hora em que o gatilho do plano ativou
             ticks:[], lastAlert:{}, soundOn:true, sim:null, ws:null };
+const M = { brent:null, dolar:null, di:null };   // último pacote macro
 
 const $ = id => document.getElementById(id);
 const fmt = v => v==null ? "—" : Math.round(v).toLocaleString("pt-BR");
@@ -249,11 +294,19 @@ function buildPlano(){
   const hitV = a => S.minima!=null && S.minima <= a;
   const alvos = (list, hit) =>
     list.map(a => hit(a) ? `<s>${fmt(a)}</s>✅` : fmt(a)).join(" / ");
+  // Gatilho ativado = máxima/mínima cruzou a zona decisiva; guarda a hora
+  // do primeiro toque visto nesta sessão do navegador.
+  if(hitC(NIV.zona_decisiva.max) && !S.trigC)
+    S.trigC = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+  if(hitV(NIV.zona_decisiva.min) && !S.trigV)
+    S.trigV = new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+  const gat = (ativo, hora) => ativo
+    ? ` <span class="hitflag">✅ ativado${hora ? " " + hora : ""}</span>` : "";
   $("plano").innerHTML = `
-    <div class="dist"><span class="up">Compra acima</span><b>${fmt(NIV.zona_decisiva.max)} + vol</b></div>
+    <div class="dist"><span class="up">Compra acima</span><b>${fmt(NIV.zona_decisiva.max)} + vol${gat(hitC(NIV.zona_decisiva.max), S.trigC)}</b></div>
     <div class="dist"><span class="up">Alvos</span><b>${alvos(NIV.alvos_compra, hitC)}</b></div>
     <div class="dist"><span class="up">Invalida</span><b>abaixo de ${fmt(NIV.zona_decisiva.min)}</b></div>
-    <div class="dist"><span class="down">Venda abaixo</span><b>${fmt(NIV.zona_decisiva.min)} + vol</b></div>
+    <div class="dist"><span class="down">Venda abaixo</span><b>${fmt(NIV.zona_decisiva.min)} + vol${gat(hitV(NIV.zona_decisiva.min), S.trigV)}</b></div>
     <div class="dist"><span class="down">Alvos</span><b>${alvos(NIV.alvos_venda, hitV)}</b></div>
     <div class="dist"><span class="down">Invalida</span><b>acima de ${fmt(NIV.zona_decisiva.max)}</b></div>`;
 }
@@ -325,17 +378,21 @@ function updateBias(){
 function updateDist(){
   if(!NIV) return;
   const p = S.ultimo; if(p==null) return;
+  // Nível "atingido" = máxima/mínima do dia tocou (mesmo critério do plano):
+  // riscado + ✅, como no monitor PETR4.
+  const hitUp = l => S.maxima!=null && S.maxima >= l;
+  const hitDn = l => S.minima!=null && S.minima <= l;
   const rows = [];
   // Regua de precos: R3 no topo ... S3 embaixo (zona decisiva no meio)
   for(let i = NIV.resistencias.length-1; i >= 0; i--)
-    rows.push({label:`R${i+1} ${fmt(NIV.resistencias[i])}`, d:NIV.resistencias[i]-p, cls:"up"});
-  rows.push({label:`ZD↑ ${fmt(NIV.zona_decisiva.max)}`, d:NIV.zona_decisiva.max-p, cls:"amber"});
-  rows.push({label:`ZD↓ ${fmt(NIV.zona_decisiva.min)}`, d:NIV.zona_decisiva.min-p, cls:"amber"});
-  NIV.suportes.forEach((s,i)=>rows.push({label:`S${i+1} ${fmt(s)}`, d:s-p, cls:"down"}));
+    rows.push({label:`R${i+1} ${fmt(NIV.resistencias[i])}`, d:NIV.resistencias[i]-p, cls:"up", hit:hitUp(NIV.resistencias[i])});
+  rows.push({label:`ZD↑ ${fmt(NIV.zona_decisiva.max)}`, d:NIV.zona_decisiva.max-p, cls:"amber", hit:hitUp(NIV.zona_decisiva.max)});
+  rows.push({label:`ZD↓ ${fmt(NIV.zona_decisiva.min)}`, d:NIV.zona_decisiva.min-p, cls:"amber", hit:hitDn(NIV.zona_decisiva.min)});
+  NIV.suportes.forEach((s,i)=>rows.push({label:`S${i+1} ${fmt(s)}`, d:s-p, cls:"down", hit:hitDn(s)}));
   let nearest = 0;
   rows.forEach((r,i)=>{ if(Math.abs(r.d) < Math.abs(rows[nearest].d)) nearest = i; });
   $("distList").innerHTML = rows.map((r,i)=>
-    `<div class="dist${i===nearest?" near":""}"><span class="${r.cls}">${r.label}</span><b>${r.d>=0?"+":""}${fmt(r.d)} pts</b></div>`
+    `<div class="dist${i===nearest?" near":""}"><span class="${r.cls}">${r.hit?`<s>${r.label}</s> <span class="hitflag">✅</span>`:r.label}</span><b>${r.d>=0?"+":""}${fmt(r.d)} pts</b></div>`
   ).join("");
 }
 function drawSpark(){
@@ -358,6 +415,65 @@ function drawSpark(){
   ctx.lineWidth = 2; ctx.beginPath();
   t.forEach((v,i)=> i ? ctx.lineTo(x(i),y(v)) : ctx.moveTo(x(i),y(v)));
   ctx.stroke();
+}
+
+/* ============ MACRO (Brent · Dólar · DI) ============ */
+const fmt2 = (v,d=2) => v==null ? "—" : v.toFixed(d).replace(".",",");
+function renderMacro(){
+  if(!M.brent && !M.dolar && !M.di) return;
+  // Cabeçalho grande: Brent (referência visual do monitor PETR4)
+  if(M.brent){
+    $("macroHead").style.display = "";
+    $("mBrentPx").textContent = fmt2(M.brent.preco);
+    const v = M.brent.var_pct;
+    $("mBrentVar").textContent = `${v>=0?"+":""}${fmt2(v)}%`;
+    $("mBrentVar").className = "macro-var " + (v>0?"up":v<0?"down":"flat");
+    $("mBrentSub").textContent = `BRENT (ICE · BZ=F) · fech. ant. ${fmt2(M.brent.fech_ant)}`;
+  }
+  // Impacto no IBOV: Brent↑ favorece (PETR4 7,8% do índice);
+  // Dólar↓ e Juros↓ favorecem. Faixa morta evita ruído virar seta.
+  const imp = [];   // +1 favorável, -1 contrário, 0 neutro
+  const rows = [];
+  const seta = s => s>0 ? `<span class="seta up">▲</span>`
+              : s<0 ? `<span class="seta down">▼</span>`
+              : `<span class="seta flat">◆</span>`;
+  if(M.brent){
+    const v = M.brent.var_pct, s = Math.abs(v)<0.1 ? 0 : (v>0?1:-1);
+    imp.push(s);
+    rows.push(`<div class="macro-row"><span class="nome">🛢 Brent<small>BZ=F · Yahoo</small></span>
+      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.brent.preco)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
+  }
+  if(M.dolar){
+    const v = M.dolar.var_pct, s = Math.abs(v)<0.05 ? 0 : (v<0?1:-1);
+    imp.push(s);
+    rows.push(`<div class="macro-row"><span class="nome">💵 Dólar<small>${M.dolar.fonte||"USD/BRL · Yahoo"}</small></span>
+      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.dolar.preco,3)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
+  }
+  if(M.di){
+    const v = M.di.var_bps, s = v==null||Math.abs(v)<1 ? 0 : (v<0?1:-1);
+    imp.push(s);
+    const stale = M.di.desatualizado ? " ⏸" : "";
+    rows.push(`<div class="macro-row"><span class="nome">📈 Juros DI<small>${M.di.ticker||"DI1"} · Profit RTD${stale}</small></span>
+      <b class="${v>0?"down":v<0?"up":"flat"}">${fmt2(M.di.taxa,3)}% ${v==null?"":(v>=0?"+":"")+fmt2(v,1)+" bps"}</b>${seta(s)}</div>`);
+  }
+  $("macroRows").innerHTML = rows.join("");
+  // Banner de alinhamento macro x WIN
+  const fav = imp.filter(s=>s>0).length, con = imp.filter(s=>s<0).length;
+  const base = S.fecAnt ?? S.abertura;
+  const winTxt = (S.ultimo!=null && base)
+    ? ` · WIN ${S.ultimo>=base?"+":""}${((S.ultimo/base-1)*100).toFixed(2).replace(".",",")}%` : "";
+  let cls, txt;
+  if(fav && !con){ cls="fav";    txt=`✔ Vento macro FAVORÁVEL — ${fav}/${imp.length} a favor do índice`; }
+  else if(con && !fav){ cls="contra"; txt=`✖ Vento macro CONTRÁRIO — ${con}/${imp.length} contra o índice`; }
+  else { cls="misto"; txt=`◆ Vento macro MISTO — ${fav} a favor · ${con} contra`; }
+  $("macroBanner").innerHTML = `<div class="align-banner ${cls}">${txt}${winTxt}</div>`;
+}
+async function loadMacroInicial(){
+  try{
+    const r = await fetch(API + "/macro");
+    const d = await r.json();
+    if(d.evento === "macro"){ M.brent=d.brent; M.dolar=d.dolar; M.di=d.di; renderMacro(); }
+  }catch(e){}
 }
 
 /* ============ RENDER ============ */
@@ -387,12 +503,19 @@ function render(){
     $("markerTag").textContent = fmt(p);
   }
   $("lastUpdate").textContent = new Date().toLocaleTimeString("pt-BR");
-  updateBias(); updateDist(); buildPlano(); drawSpark();
+  updateBias(); updateDist(); buildPlano(); drawSpark(); renderMacro();
 }
 
 /* ============ INGESTÃO ============ */
 function onTick(data){
   if(data.evento === "niveis_atualizados"){ loadNiveis(); return; }
+  if(data.evento === "blue_chips"){ renderBlueChips(data); return; }
+  if(data.evento === "macro"){
+    M.brent = data.brent ?? M.brent;
+    M.dolar = data.dolar ?? M.dolar;
+    M.di    = data.di    ?? M.di;
+    renderMacro(); return;
+  }
   if(data.evento === "confluencia"){
     pushAlert("⭐ " + data.msg, "conf");
     beep(1320); setTimeout(()=>beep(1320), 250);   // beep duplo agudo
@@ -413,12 +536,49 @@ function onTick(data){
   S.agrC     = g("agr_compra") ?? S.agrC;
   S.agrV     = g("agr_venda")  ?? S.agrV;
   S.vwap     = g("vwap")       ?? S.vwap;
+  S.fecAnt   = g("fec_ant")    ?? S.fecAnt;
   if(S.ultimo!=null){
     S.ticks.push(S.ultimo);
     if(S.ticks.length > 300) S.ticks.shift();
     checkCrossings(prev, S.ultimo);
   }
   render();
+}
+
+/* ============ BLUE CHIPS ============ */
+function renderBlueChips(data){
+  const body = $("bcBody");
+  body.innerHTML = data.ativos.map(a => {
+    const cls = a.fluxo==="compra"?"up":a.fluxo==="venda"?"down":"flat";
+    const varTxt = a.var_pct==null ? "—" :
+      `${a.var_pct>=0?"+":""}${a.var_pct.toFixed(2).replace(".",",")}%`;
+    const barW = Math.max(2, Math.min(40, a.dominancia));
+    return `<tr>
+      <td style="padding:4px 0"><b>${a.ticker}</b></td>
+      <td style="text-align:right">${a.ultimo!=null ? a.ultimo.toFixed(2).replace(".",",") : "—"}</td>
+      <td style="text-align:right" class="${cls}">${varTxt}</td>
+      <td style="text-align:right;color:var(--dim)">${a.peso_ibov!=null ? a.peso_ibov.toFixed(1).replace(".",",")+"%" : "—"}</td>
+      <td style="text-align:right" class="${cls}">${a.fluxo}
+        <span style="display:inline-block;width:${barW}px;height:6px;background:currentColor;opacity:.6;margin-left:4px;vertical-align:middle;border-radius:2px"></span>
+      </td>
+    </tr>`;
+  }).join("");
+  const total = data.ativos.length;
+  const viesHtml = data.vies==="compra"
+    ? `<span class="up">▲ VIÉS DE COMPRA</span>`
+    : data.vies==="venda"
+    ? `<span class="down">▼ VIÉS DE VENDA</span>`
+    : `<span class="flat">◆ VIÉS MISTO</span>`;
+  const n = data.vies==="compra" ? data.positivas : data.vies==="venda" ? data.negativas : Math.max(data.positivas,data.negativas);
+  $("bcBias").innerHTML =
+    `<span>Sinal agregado blue chips → WIN</span><b>${viesHtml} (${n}/${total})</b>`;
+}
+async function loadBlueChipsInicial(){
+  try{
+    const r = await fetch(API + "/blue_chips");
+    const d = await r.json();
+    if(d.ativos) renderBlueChips(d);
+  }catch(e){}
 }
 
 /* ============ WEBSOCKET ============ */
@@ -464,6 +624,8 @@ $("btnSound").onclick = () => {
 };
 
 loadNiveis();
+loadBlueChipsInicial();
+loadMacroInicial();
 connectWS();
 </script>
 </body>

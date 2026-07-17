@@ -3,6 +3,47 @@
 Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
 
+## 2026-07-17
+
+### Card MACRO — Brent, Dólar e Juros DI (impacto no IBOV)
+- `server_win.py`: novo `macro_loop` paralelo — Brent (`BZ=F`) via Yahoo
+  a cada 30s (mesmo desenho do monitor PETR4); DI futuro e DOLFUT via
+  `dados_macro_rtd.csv` do Profit RTD (`RtdMacroReader`). O DI escolhido
+  é o de maior volume (contrato mais líquido — acompanha a rolagem);
+  Dólar prefere DOLFUT em tempo real (pontos/1000 = R$) com Yahoo
+  `USDBRL=X` como fallback se o RTD parar (>180s). Evento WS `macro`,
+  rota `GET /macro`, tabela `macro_snapshots` no SQLite (correlação
+  macro × WIN).
+- `ExportarWIN.bas`: novo `ExportarMacroRTD` — varre a coluna A da DADOS
+  e exporta todas as linhas `DI1*` + `DOLFUT` (último, FEC, volume) a
+  cada ciclo de 2s. Módulo1 do `WDO_Master_RTD.xlsm` atualizado via COM
+  na própria sessão (PararExportWIN → substituição → IniciarExportWIN).
+- `dashboard_win.html`: card "MACRO — IMPACTO NO IBOV" com Brent em
+  destaque, linhas Brent/Dólar/DI com seta de impacto no índice
+  (Brent↑, Dólar↓ e DI↓ favorecem) e banner de alinhamento
+  favorável/contrário/misto com a variação do WIN (vs. FEC).
+
+### Layout: Alertas e Blue Chips na coluna central
+- Os cards Alertas e Blue Chips saíram da coluna direita para o espaço
+  vazio abaixo dos stats na coluna central, lado a lado (`.row2`, grid
+  2×1 que empilha abaixo de 900px). Coluna direita ficou: MACRO →
+  Distância → Plano do dia.
+
+### Início automático via .bat (redundância ao auto-start do VBA)
+- `iniciar_win.bat`: mesmo padrão do `iniciar_petr4.bat` — testa a porta
+  8001 e só sobe `python server_win.py` (console minimizado) se não houver
+  server no ar. Idempotente: pode rodar quantas vezes quiser.
+- `Monitor WIN — servidor.vbs` na pasta Inicializar do Windows
+  (`shell:startup`): roda o .bat oculto no logon. Os atalhos que já
+  existiam lá só abrem os dashboards (apps do Edge) — nenhum subia o
+  servidor; cobria só o caminho VBA, que já falhou silencioso (09/07).
+
+### Risco + flag nos níveis atingidos (padrão do monitor PETR4)
+- "Distância aos níveis": nível tocado pela máxima/mínima do dia fica
+  riscado com ✅ (R/S e bordas da zona decisiva).
+- "Plano do dia": gatilho Compra/Venda ganha `✅ ativado hh:mm` quando a
+  máxima/mínima cruza a zona decisiva (alvos já riscavam desde antes).
+
 ## 2026-07-03
 
 ### Início automático via Excel

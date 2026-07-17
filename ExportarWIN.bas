@@ -29,6 +29,12 @@ Private Const PLANILHA As String = "DADOS"
 Private Const ATIVO As String = "WINFUTV"   ' <== procurado na coluna A
 Private Const INTERVALO_SEG As Long = 2
 
+' --- Macro RTD (DI futuro + dolar) para o card MACRO --------------
+' Varre a coluna A da planilha DADOS e exporta TODAS as linhas DI1*
+' (o server usa a de maior volume = contrato mais liquido) e o DOLFUT.
+' Colunas: D(4)=ultimo  H(8)=fec_ant  J(10)=volume.
+Private Const CAMINHO_CSV_MACRO As String = "C:\Users\rodri\OneDrive\Apps\monitor_win\dados_macro_rtd.csv"
+
 Private proximaExecucao As Date
 Private exportando As Boolean
 
@@ -114,6 +120,8 @@ Public Sub ExportarWIN()
     Print #fnum, linha
     Close #fnum
 
+    Call ExportarMacroRTD(ws)
+
 Reagendar:
     If exportando Then
         proximaExecucao = Now + TimeSerial(0, 0, INTERVALO_SEG)
@@ -121,17 +129,48 @@ Reagendar:
     End If
 End Sub
 
+' Exporta DI futuros (todos os DI1*) e DOLFUT para o card MACRO.
+' Se nenhum ticker macro existir na planilha, sai em silencio.
+Private Sub ExportarMacroRTD(ws As Worksheet)
+    Dim r As Long
+    Dim fnum As Integer
+    Dim tk As String
+    Dim linhas As String
+    On Error GoTo Fim                       ' nunca derruba o export do WIN
+    For r = 1 To 100
+        tk = Trim(CStr(ws.Cells(r, 1).Value))
+        If tk Like "DI1*" Or tk = "DOLFUT" Then
+            linhas = linhas & tk & ";" & _
+                NumBR(ws.Cells(r, 4).Value) & ";" & _
+                NumBR(ws.Cells(r, 8).Value) & ";" & _
+                NumBR(ws.Cells(r, 10).Value) & ";" & _
+                Format(Now, "hh:nn:ss") & vbCrLf
+        End If
+    Next r
+    If Len(linhas) = 0 Then Exit Sub
+    fnum = FreeFile
+    Open CAMINHO_CSV_MACRO For Output As #fnum
+    Print #fnum, "ticker;ultimo;fec_ant;volume;timestamp"
+    Print #fnum, linhas;
+    Close #fnum
+Fim:
+End Sub
+
 ' Localiza a linha do ativo na coluna A (0 se nao encontrado).
 ' Busca nas primeiras 100 linhas — suficiente para a tabela de ativos.
 Private Function LinhaDoAtivo(ws As Worksheet) As Long
+    LinhaDoAtivo = LinhaDoTicker(ws, ATIVO)
+End Function
+
+Private Function LinhaDoTicker(ws As Worksheet, ticker As String) As Long
     Dim r As Long
     For r = 1 To 100
-        If Trim(CStr(ws.Cells(r, 1).Value)) = ATIVO Then
-            LinhaDoAtivo = r
+        If Trim(CStr(ws.Cells(r, 1).Value)) = ticker Then
+            LinhaDoTicker = r
             Exit Function
         End If
     Next r
-    LinhaDoAtivo = 0
+    LinhaDoTicker = 0
 End Function
 
 ' Converte para string numerica com ponto decimal (formato US),

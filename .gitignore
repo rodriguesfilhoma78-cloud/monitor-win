@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 .venv/
 *.log
+
+# dados de runtime (regravados pelo VBA/servidor durante o pregao)
+dados_*.csv
+*.db
+niveis.json

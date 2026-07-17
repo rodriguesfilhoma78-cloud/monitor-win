@@ -5,6 +5,9 @@
 ----------------------------------------------------------------
  Pipeline : Profit Pro RTD -> Excel (VBA) -> dados_win.csv
             -> este servidor (FastAPI) -> WebSocket -> dashboard
+ Extra    : macro (Brent via Yahoo; DI futuro + DOLFUT via RTD/Excel
+            em dados_macro_rtd.csv, dolar Yahoo como fallback)
+            -> card MACRO do dashboard
  Porta    : 8001 (roda em paralelo com o server do WDO na 8000)
  Executar : python server_win.py
 ================================================================
@@ -28,6 +31,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +42,7 @@ from fastapi.responses import FileResponse, JSONResponse
 # ----------------------------------------------------------------
 BASE_DIR      = Path(__file__).parent
 CSV_PATH      = BASE_DIR / "dados_win.csv"       # gerado pelo VBA (ExportarWIN)
+BLUE_CHIPS_CSV = BASE_DIR / "dados_blue_chips.csv"  # gerado pelo VBA (ExportarBlueChips)
 NIVEIS_PATH   = BASE_DIR / "niveis.json"         # niveis do dia (editavel)
 DB_PATH       = BASE_DIR / "win_history.db"
 DASHBOARD     = BASE_DIR / "dashboard_win.html"
@@ -45,6 +50,25 @@ POLL_INTERVAL = 1.0        # segundos entre leituras do CSV
 SNAPSHOT_EVERY = 2         # segundos entre snapshots no SQLite (resolucao
                            # do perfil de volume; ~12k linhas/dia no WIN)
 HOST, PORT    = "127.0.0.1", 8001
+
+# Peso aproximado de cada blue chip no IBOV (atualizar periodicamente -
+# nao ha fonte RTD para isso, e um dado de composicao do indice).
+PESO_IBOV = {
+    "VALE3": 11.2, "PETR4": 7.8, "ITUB4": 6.5, "BBDC4": 3.1, "BBAS3": 2.4,
+}
+
+# --- Macro (Brent, Dolar, DI) -----------------------------------------
+# Brent e Dolar: Yahoo Finance (mesma fonte do monitor PETR4 — o
+# investing.com bloqueia scraping via Cloudflare).
+# DI futuro: nao existe no Yahoo; vem do Profit via RTD/Excel, exportado
+# pelo VBA em dados_di.csv (ver ExportarWIN.bas).
+YAHOO_CHART   = ("https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+                 "?range=1d&interval=15m")
+MACRO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+MACRO_POLL    = 30                            # segundos entre consultas
+MACRO_SYMBOLS = {"brent": "BZ=F", "dolar": "USDBRL=X"}
+MACRO_RTD_CSV = BASE_DIR / "dados_macro_rtd.csv"  # VBA (ExportarMacroRTD)
+RTD_MAX_AGE   = 180                           # s sem update = desatualizado
 
 
 # ----------------------------------------------------------------
@@ -128,6 +152,165 @@ class CsvReader:
         if values["ultimo"] is None:
             return None
         return Tick(**values, timestamp=time.strftime("%H:%M:%S"))
+
+
+# ----------------------------------------------------------------
+# LEITOR DO CSV DE BLUE CHIPS (fluxo das acoes que compoem o IBOV)
+# ----------------------------------------------------------------
+class BlueChipsReader:
+    """Le dados_blue_chips.csv (gerado por ExportarBlueChips.bas) e
+    classifica o fluxo de cada ativo pela dominancia de agressao.
+
+    Formato esperado (separador ';', 1 linha por ativo):
+    ticker;ultimo;abertura;maxima;minima;fec_ant;agr_compra;agr_venda;vwap;volume;timestamp
+    """
+
+    FIELDS = ["ticker", "ultimo", "abertura", "maxima", "minima", "fec_ant",
+              "agr_compra", "agr_venda", "vwap", "volume", "timestamp"]
+    DOMINANCIA_MIN = 5.0   # % de dominancia abaixo disso = "neutro" (ruido)
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._last_mtime = 0.0
+
+    def read_if_changed(self) -> Optional[list[dict]]:
+        if not self.path.exists():
+            return None
+        mtime = self.path.stat().st_mtime
+        if mtime == self._last_mtime:
+            return None
+        self._last_mtime = mtime
+        try:
+            with open(self.path, encoding="utf-8-sig", errors="ignore") as f:
+                rows = [r for r in csv.reader(f, delimiter=";") if r]
+        except PermissionError:
+            return None                      # Excel escrevendo no arquivo
+        out = []
+        for row in rows[1:]:                 # pula cabecalho
+            if len(row) < len(self.FIELDS) or not row[0]:
+                continue
+            d = dict(zip(self.FIELDS, row))
+            ultimo = _to_float(d["ultimo"])
+            fec = _to_float(d["fec_ant"])
+            ac = _to_float(d["agr_compra"]) or 0.0
+            av = _to_float(d["agr_venda"]) or 0.0
+            delta = ac - av
+            dominancia = abs(delta) / (ac + av) * 100 if (ac + av) else 0.0
+            fluxo = "neutro"
+            if dominancia > self.DOMINANCIA_MIN:
+                fluxo = "compra" if delta > 0 else "venda"
+            var_pct = ((ultimo - fec) / fec * 100) if (ultimo and fec) else None
+            out.append({
+                "ticker": d["ticker"], "ultimo": ultimo, "var_pct": var_pct,
+                "peso_ibov": PESO_IBOV.get(d["ticker"]), "fluxo": fluxo,
+                "dominancia": round(dominancia, 1),
+            })
+        return out or None
+
+
+# ----------------------------------------------------------------
+# MACRO: BRENT + DOLAR (Yahoo) e DI FUTURO (RTD via CSV)
+# ----------------------------------------------------------------
+class MacroFetcher:
+    """Busca Brent e Dolar no Yahoo Finance.
+
+    Fonte unica e isolada aqui (mesmo desenho do BrentFetcher do PETR4):
+    para trocar a fonte, basta reimplementar fetch_symbol().
+    Em caso de erro mantem a ultima cotacao valida de cada simbolo.
+    """
+
+    def __init__(self):
+        self.last: dict[str, dict] = {}      # chave -> ultima cotacao valida
+        self.last_ok: float = 0.0
+
+    async def fetch_symbol(self, client: httpx.AsyncClient,
+                           sym: str) -> Optional[dict]:
+        try:
+            r = await client.get(YAHOO_CHART.format(sym=sym),
+                                 headers=MACRO_HEADERS, timeout=10)
+            r.raise_for_status()
+            meta = r.json()["chart"]["result"][0]["meta"]
+            preco = meta.get("regularMarketPrice")
+            prev  = meta.get("chartPreviousClose") or meta.get("previousClose")
+            if preco is None or not prev:
+                return None
+            return {
+                "preco": round(float(preco), 4),
+                "fech_ant": round(float(prev), 4),
+                "var_pct": round((float(preco) / float(prev) - 1) * 100, 2),
+                "ts": time.strftime("%H:%M:%S"),
+            }
+        except Exception:
+            return None                      # mantem a ultima cotacao valida
+
+    async def fetch_all(self, client: httpx.AsyncClient) -> dict[str, dict]:
+        for key, sym in MACRO_SYMBOLS.items():
+            q = await self.fetch_symbol(client, sym)
+            if q:
+                self.last[key] = q
+                self.last_ok = time.time()
+        return self.last
+
+
+class RtdMacroReader:
+    """Le dados_macro_rtd.csv exportado pelo VBA (DI futuros + DOLFUT).
+
+    Formato esperado (separador ';', 1 linha por ativo):
+    ticker;ultimo;fec_ant;volume;timestamp
+
+    DI: o VBA exporta TODOS os DI1* da planilha; aqui vence o de maior
+    volume (contrato mais liquido = referencia do juro futuro; a escolha
+    acompanha a rolagem sem mexer em codigo). Taxa em % a.a.;
+    variacao em bps = (ultimo - fec_ant) x 100.
+
+    DOLFUT: cotado em pontos B3 (R$ por US$1000) -> /1000 = R$/US$.
+    Tempo real do pregao, preferido ao spot do Yahoo (fallback).
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def read(self) -> dict:
+        if not self.path.exists():
+            return {}
+        try:
+            idade = time.time() - self.path.stat().st_mtime
+            with open(self.path, encoding="utf-8-sig", errors="ignore") as f:
+                rows = [r for r in csv.reader(f, delimiter=";") if r]
+        except PermissionError:
+            return {}                        # Excel escrevendo no arquivo
+        stale = idade > RTD_MAX_AGE
+        out: dict = {}
+        best_di = None
+        for row in rows[1:]:                 # pula cabecalho
+            if len(row) < 4:
+                continue
+            tk = row[0].strip()
+            ultimo = _to_float(row[1])
+            fec    = _to_float(row[2])
+            vol    = _to_float(row[3]) or 0.0
+            ts     = row[4] if len(row) > 4 else ""
+            if ultimo is None:
+                continue
+            if tk.startswith("DI1"):
+                if best_di is None or vol > best_di["_vol"]:
+                    best_di = {
+                        "ticker": tk, "taxa": ultimo, "fec_ant": fec,
+                        "var_bps": round((ultimo - fec) * 100, 1) if fec else None,
+                        "ts": ts, "desatualizado": stale, "_vol": vol,
+                    }
+            elif tk == "DOLFUT" and fec:
+                out["dolar"] = {
+                    "preco": round(ultimo / 1000, 4),
+                    "fech_ant": round(fec / 1000, 4),
+                    "var_pct": round((ultimo / fec - 1) * 100, 2),
+                    "ts": ts, "fonte": "DOLFUT · Profit RTD",
+                    "desatualizado": stale,
+                }
+        if best_di:
+            best_di.pop("_vol")
+            out["di"] = best_di
+        return out
 
 
 # ----------------------------------------------------------------
@@ -234,6 +417,14 @@ class SnapshotDB:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     dia TEXT, ts TEXT, origem TEXT, dados TEXT
                 )""")
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS macro_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dia TEXT, ts TEXT,
+                    brent REAL, brent_var REAL,
+                    dolar REAL, dolar_var REAL,
+                    di REAL, di_var_bps REAL
+                )""")
             # snapshots antigos nao tinham a coluna de data
             try:
                 con.execute("ALTER TABLE snapshots ADD COLUMN dia TEXT")
@@ -289,6 +480,19 @@ class SnapshotDB:
                 (date.today().isoformat(), time.strftime("%H:%M:%S"),
                  ev.get("evento"), ev.get("direcao"), ev.get("nivel"),
                  ev.get("delta_ema"), ev.get("msg")))
+
+    def save_macro_sync(self, brent: Optional[dict], dolar: Optional[dict],
+                        di: Optional[dict]):
+        """Historico macro para analise de correlacao com o WIN."""
+        g = lambda d, k: d.get(k) if d else None
+        with sqlite3.connect(self.path) as con:
+            con.execute(
+                "INSERT INTO macro_snapshots (dia,ts,brent,brent_var,"
+                "dolar,dolar_var,di,di_var_bps) VALUES (?,?,?,?,?,?,?,?)",
+                (date.today().isoformat(), time.strftime("%H:%M:%S"),
+                 g(brent, "preco"), g(brent, "var_pct"),
+                 g(dolar, "preco"), g(dolar, "var_pct"),
+                 g(di, "taxa"), g(di, "var_bps")))
 
     def log_niveis_sync(self, dados: dict, origem: str):
         """Registra cada versao dos niveis do dia (auto, refinado ou manual)."""
@@ -537,11 +741,16 @@ class ConfluenceEngine:
 # APP + LIFESPAN
 # ----------------------------------------------------------------
 reader   = CsvReader(CSV_PATH)
+blue_chips_reader = BlueChipsReader(BLUE_CHIPS_CSV)
 levels   = LevelStore(NIVEIS_PATH)
 db       = SnapshotDB(DB_PATH)
 manager  = ConnectionManager()
 engine   = ConfluenceEngine(levels)
+macro    = MacroFetcher()
+rtd_macro = RtdMacroReader(MACRO_RTD_CSV)
 last_tick: Optional[Tick] = None
+last_blue_chips: Optional[dict] = None
+last_macro: Optional[dict] = None
 
 
 def atualizar_niveis_automaticos(force: bool = False) -> Optional[dict]:
@@ -590,7 +799,7 @@ def refinar_niveis_com_fec(fec: float) -> Optional[dict]:
 
 async def market_loop():
     """Loop principal: le CSV -> confluencia -> broadcast -> snapshot."""
-    global last_tick
+    global last_tick, last_blue_chips
     last_snapshot = 0.0
     loop = asyncio.get_running_loop()
     dia_atual = date.today()
@@ -632,14 +841,61 @@ async def market_loop():
                 last_snapshot = now
                 # NAO bloqueia o event loop (corrige debito do server_v2)
                 await loop.run_in_executor(None, db.save_sync, tick)
+        bc = blue_chips_reader.read_if_changed()
+        if bc:
+            positivas = sum(1 for a in bc if a["fluxo"] == "compra")
+            negativas = sum(1 for a in bc if a["fluxo"] == "venda")
+            vies = ("compra" if positivas > negativas else
+                    "venda" if negativas > positivas else "neutro")
+            payload = {"evento": "blue_chips", "ativos": bc, "vies": vies,
+                       "positivas": positivas, "negativas": negativas}
+            last_blue_chips = payload
+            await manager.broadcast(payload)
         await asyncio.sleep(POLL_INTERVAL)
+
+
+async def macro_loop():
+    """Loop paralelo: Brent + Dolar no Yahoo, DI no CSV do RTD.
+
+    Transmite o pacote consolidado via WS a cada MACRO_POLL segundos e
+    persiste no SQLite para estudo de correlacao com o WIN.
+    """
+    global last_macro
+    loop = asyncio.get_running_loop()
+    print(f"[WIN] Macro loop iniciado ({', '.join(MACRO_SYMBOLS.values())} "
+          f"+ DI/DOLFUT via {MACRO_RTD_CSV.name}) a cada {MACRO_POLL}s")
+    async with httpx.AsyncClient() as client:
+        while True:
+            quotes = await macro.fetch_all(client)
+            rtd = rtd_macro.read()
+            di = rtd.get("di")
+            # Dolar: DOLFUT em tempo real tem prioridade; Yahoo (spot,
+            # delay) e o fallback quando o RTD falta ou esta parado.
+            dolar_rtd = rtd.get("dolar")
+            dolar = (dolar_rtd if dolar_rtd and not dolar_rtd["desatualizado"]
+                     else quotes.get("dolar"))
+            if quotes or di or dolar:
+                last_macro = {
+                    "evento": "macro",
+                    "brent": quotes.get("brent"),
+                    "dolar": dolar,
+                    "di": di,
+                    "ts": time.strftime("%H:%M:%S"),
+                }
+                await manager.broadcast(last_macro)
+                await loop.run_in_executor(
+                    None, db.save_macro_sync,
+                    quotes.get("brent"), dolar, di)
+            await asyncio.sleep(MACRO_POLL)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(market_loop())
+    t1 = asyncio.create_task(market_loop())
+    t2 = asyncio.create_task(macro_loop())
     yield
-    task.cancel()
+    t1.cancel()
+    t2.cancel()
 
 
 app = FastAPI(title="Monitor WIN", lifespan=lifespan)
@@ -712,12 +968,31 @@ async def get_ultimo():
     return asdict(last_tick) if last_tick else {"status": "aguardando dados"}
 
 
+@app.get("/blue_chips")
+async def get_blue_chips():
+    return last_blue_chips or {"status": "aguardando dados"}
+
+
+@app.get("/macro")
+async def get_macro():
+    """Ultimo pacote macro (Brent, Dolar, DI) + idade do dado em segundos."""
+    if last_macro is None:
+        return {"status": "aguardando dados"}
+    return {**last_macro,
+            "idade_s": round(time.time() - macro.last_ok, 1)
+            if macro.last_ok else None}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await manager.connect(ws)
     # envia estado atual imediatamente ao conectar
     if last_tick:
         await ws.send_json(asdict(last_tick))
+    if last_blue_chips:
+        await ws.send_json(last_blue_chips)
+    if last_macro:
+        await ws.send_json(last_macro)
     try:
         while True:
             await ws.receive_text()   # mantem a conexao viva
@@ -730,5 +1005,6 @@ if __name__ == "__main__":
     print(" MONITOR WIN - http://127.0.0.1:8001")
     print(" Dashboard:   http://127.0.0.1:8001/")
     print(" Niveis:      http://127.0.0.1:8001/niveis")
+    print(" Macro:       http://127.0.0.1:8001/macro")
     print("=" * 60)
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
