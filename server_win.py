@@ -5,8 +5,8 @@
 ----------------------------------------------------------------
  Pipeline : Profit Pro RTD -> Excel (VBA) -> dados_win.csv
             -> este servidor (FastAPI) -> WebSocket -> dashboard
- Extra    : macro (Brent via Yahoo; DI futuro + DOLFUT via RTD/Excel
-            em dados_macro_rtd.csv, dolar Yahoo como fallback)
+ Extra    : macro (S&P 500 ES=F via Yahoo; DI futuro + DOLFUT via
+            RTD/Excel em dados_macro_rtd.csv, dolar Yahoo como fallback)
             -> card MACRO do dashboard
  Porta    : 8001 (roda em paralelo com o server do WDO na 8000)
  Executar : python server_win.py
@@ -57,16 +57,17 @@ PESO_IBOV = {
     "VALE3": 11.2, "PETR4": 7.8, "ITUB4": 6.5, "BBDC4": 3.1, "BBAS3": 2.4,
 }
 
-# --- Macro (Brent, Dolar, DI) -----------------------------------------
-# Brent e Dolar: Yahoo Finance (mesma fonte do monitor PETR4 — o
-# investing.com bloqueia scraping via Cloudflare).
-# DI futuro: nao existe no Yahoo; vem do Profit via RTD/Excel, exportado
-# pelo VBA em dados_di.csv (ver ExportarWIN.bas).
+# --- Macro (S&P 500, Dolar, DI) ---------------------------------------
+# S&P 500 e Dolar: Yahoo Finance. O S&P e o driver global de risco que
+# mais move o IBOV (correlacao positiva); usamos o E-mini futuro ES=F
+# porque negocia quase 24h — o indice a vista (^GSPC) fica parado antes
+# da abertura de NY. DI futuro: nao existe no Yahoo; vem do Profit via
+# RTD/Excel em dados_macro_rtd.csv (ver ExportarWIN.bas).
 YAHOO_CHART   = ("https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                  "?range=1d&interval=15m")
 MACRO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 MACRO_POLL    = 30                            # segundos entre consultas
-MACRO_SYMBOLS = {"brent": "BZ=F", "dolar": "USDBRL=X"}
+MACRO_SYMBOLS = {"sp500": "ES=F", "dolar": "USDBRL=X"}
 MACRO_RTD_CSV = BASE_DIR / "dados_macro_rtd.csv"  # VBA (ExportarMacroRTD)
 RTD_MAX_AGE   = 180                           # s sem update = desatualizado
 
@@ -209,10 +210,10 @@ class BlueChipsReader:
 
 
 # ----------------------------------------------------------------
-# MACRO: BRENT + DOLAR (Yahoo) e DI FUTURO (RTD via CSV)
+# MACRO: S&P 500 + DOLAR (Yahoo) e DI FUTURO (RTD via CSV)
 # ----------------------------------------------------------------
 class MacroFetcher:
-    """Busca Brent e Dolar no Yahoo Finance.
+    """Busca S&P 500 e Dolar no Yahoo Finance.
 
     Fonte unica e isolada aqui (mesmo desenho do BrentFetcher do PETR4):
     para trocar a fonte, basta reimplementar fetch_symbol().
@@ -421,10 +422,17 @@ class SnapshotDB:
                 CREATE TABLE IF NOT EXISTS macro_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     dia TEXT, ts TEXT,
-                    brent REAL, brent_var REAL,
+                    sp500 REAL, sp500_var REAL,
                     dolar REAL, dolar_var REAL,
                     di REAL, di_var_bps REAL
                 )""")
+            # migracao: tabelas criadas com Brent (17/07 cedo) -> S&P 500
+            for old, new in (("brent", "sp500"), ("brent_var", "sp500_var")):
+                try:
+                    con.execute(f"ALTER TABLE macro_snapshots "
+                                f"RENAME COLUMN {old} TO {new}")
+                except sqlite3.OperationalError:
+                    pass                     # coluna ja renomeada/inexistente
             # snapshots antigos nao tinham a coluna de data
             try:
                 con.execute("ALTER TABLE snapshots ADD COLUMN dia TEXT")
@@ -481,16 +489,16 @@ class SnapshotDB:
                  ev.get("evento"), ev.get("direcao"), ev.get("nivel"),
                  ev.get("delta_ema"), ev.get("msg")))
 
-    def save_macro_sync(self, brent: Optional[dict], dolar: Optional[dict],
+    def save_macro_sync(self, sp500: Optional[dict], dolar: Optional[dict],
                         di: Optional[dict]):
         """Historico macro para analise de correlacao com o WIN."""
         g = lambda d, k: d.get(k) if d else None
         with sqlite3.connect(self.path) as con:
             con.execute(
-                "INSERT INTO macro_snapshots (dia,ts,brent,brent_var,"
+                "INSERT INTO macro_snapshots (dia,ts,sp500,sp500_var,"
                 "dolar,dolar_var,di,di_var_bps) VALUES (?,?,?,?,?,?,?,?)",
                 (date.today().isoformat(), time.strftime("%H:%M:%S"),
-                 g(brent, "preco"), g(brent, "var_pct"),
+                 g(sp500, "preco"), g(sp500, "var_pct"),
                  g(dolar, "preco"), g(dolar, "var_pct"),
                  g(di, "taxa"), g(di, "var_bps")))
 
@@ -855,7 +863,7 @@ async def market_loop():
 
 
 async def macro_loop():
-    """Loop paralelo: Brent + Dolar no Yahoo, DI no CSV do RTD.
+    """Loop paralelo: S&P 500 + Dolar no Yahoo, DI no CSV do RTD.
 
     Transmite o pacote consolidado via WS a cada MACRO_POLL segundos e
     persiste no SQLite para estudo de correlacao com o WIN.
@@ -877,7 +885,7 @@ async def macro_loop():
             if quotes or di or dolar:
                 last_macro = {
                     "evento": "macro",
-                    "brent": quotes.get("brent"),
+                    "sp500": quotes.get("sp500"),
                     "dolar": dolar,
                     "di": di,
                     "ts": time.strftime("%H:%M:%S"),
@@ -885,7 +893,7 @@ async def macro_loop():
                 await manager.broadcast(last_macro)
                 await loop.run_in_executor(
                     None, db.save_macro_sync,
-                    quotes.get("brent"), dolar, di)
+                    quotes.get("sp500"), dolar, di)
             await asyncio.sleep(MACRO_POLL)
 
 
@@ -975,7 +983,7 @@ async def get_blue_chips():
 
 @app.get("/macro")
 async def get_macro():
-    """Ultimo pacote macro (Brent, Dolar, DI) + idade do dado em segundos."""
+    """Ultimo pacote macro (S&P 500, Dolar, DI) + idade do dado em segundos."""
     if last_macro is None:
         return {"status": "aguardando dados"}
     return {**last_macro,

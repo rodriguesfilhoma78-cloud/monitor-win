@@ -189,7 +189,7 @@ const S = { ultimo:null, abertura:null, maxima:null, minima:null,
             volume:null, agrC:null, agrV:null, vwap:null, fecAnt:null,
             trigC:null, trigV:null,   // hora em que o gatilho do plano ativou
             ticks:[], lastAlert:{}, soundOn:true, sim:null, ws:null };
-const M = { brent:null, dolar:null, di:null };   // último pacote macro
+const M = { sp500:null, dolar:null, di:null };   // último pacote macro
 
 const $ = id => document.getElementById(id);
 const fmt = v => v==null ? "—" : Math.round(v).toLocaleString("pt-BR");
@@ -415,22 +415,22 @@ function drawSpark(){
   ctx.stroke();
 }
 
-/* ============ MACRO (Brent · Dólar · DI) ============ */
+/* ============ MACRO (S&P 500 · Dólar · DI) ============ */
 const fmt2 = (v,d=2) => v==null ? "—" : v.toFixed(d).replace(".",",");
 function renderMacro(){
-  if(!M.brent && !M.dolar && !M.di) return;
-  // Impacto no IBOV: Brent↑ favorece (PETR4 7,8% do índice);
+  if(!M.sp500 && !M.dolar && !M.di) return;
+  // Impacto no IBOV: S&P 500↑ (risk-on global) favorece o índice;
   // Dólar↓ e Juros↓ favorecem. Faixa morta evita ruído virar seta.
   const imp = [];   // +1 favorável, -1 contrário, 0 neutro
   const rows = [];
   const seta = s => s>0 ? `<span class="seta up">▲</span>`
               : s<0 ? `<span class="seta down">▼</span>`
               : `<span class="seta flat">◆</span>`;
-  if(M.brent){
-    const v = M.brent.var_pct, s = Math.abs(v)<0.1 ? 0 : (v>0?1:-1);
+  if(M.sp500){
+    const v = M.sp500.var_pct, s = Math.abs(v)<0.1 ? 0 : (v>0?1:-1);
     imp.push(s);
-    rows.push(`<div class="macro-row"><span class="nome">🛢 Brent<small>BZ=F · Yahoo</small></span>
-      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.brent.preco)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
+    rows.push(`<div class="macro-row"><span class="nome">🇺🇸 S&P 500<small>ES=F · Yahoo</small></span>
+      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.sp500.preco)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
   }
   if(M.dolar){
     const v = M.dolar.var_pct, s = Math.abs(v)<0.05 ? 0 : (v<0?1:-1);
@@ -472,7 +472,7 @@ async function loadMacroInicial(){
   try{
     const r = await fetch(API + "/macro");
     const d = await r.json();
-    if(d.evento === "macro"){ M.brent=d.brent; M.dolar=d.dolar; M.di=d.di; renderMacro(); }
+    if(d.evento === "macro"){ M.sp500=d.sp500; M.dolar=d.dolar; M.di=d.di; renderMacro(); }
   }catch(e){}
 }
 
@@ -511,7 +511,7 @@ function onTick(data){
   if(data.evento === "niveis_atualizados"){ loadNiveis(); return; }
   if(data.evento === "blue_chips"){ renderBlueChips(data); return; }
   if(data.evento === "macro"){
-    M.brent = data.brent ?? M.brent;
+    M.sp500 = data.sp500 ?? M.sp500;
     M.dolar = data.dolar ?? M.dolar;
     M.di    = data.di    ?? M.di;
     renderMacro(); return;

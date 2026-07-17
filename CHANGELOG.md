@@ -23,6 +23,15 @@ Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
   (Brent↑, Dólar↓ e DI↓ favorecem) e banner de alinhamento
   favorável/contrário/misto com a variação do WIN (vs. FEC).
 
+### Macro: Brent → S&P 500 (driver global do IBOV)
+- Card MACRO troca o Brent pelo **S&P 500** (E-mini futuro `ES=F` via
+  Yahoo — negocia quase 24h, o índice à vista `^GSPC` fica parado antes
+  da abertura de NY). Mesma lógica: S&P↑ (risk-on) favorece o índice.
+- `server_win.py`: `MACRO_SYMBOLS` sp500=ES=F; payload/WS/`GET /macro`
+  usam a chave `sp500`; tabela `macro_snapshots` renomeia colunas
+  `brent/brent_var` → `sp500/sp500_var` (migração `ALTER … RENAME`).
+- `dashboard_win.html`: linha "🇺🇸 S&P 500 · ES=F · Yahoo".
+
 ### Fix: Blue Chips não atualizava (auto-start faltando)
 - Causa raiz: o `Workbook_Open` (em EstaPastaDeTrabalho do
   `WDO_Master_RTD.xlsm`) iniciava WIN, PETR4 e PetroVale, mas **nunca
