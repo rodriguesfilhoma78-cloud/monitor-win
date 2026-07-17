@@ -23,6 +23,16 @@ Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
   (Brent↑, Dólar↓ e DI↓ favorecem) e banner de alinhamento
   favorável/contrário/misto com a variação do WIN (vs. FEC).
 
+### Macro: + DXY (dólar global) — estudo de correlação
+- Estudo de 1 ano de retornos diários vs IBOV (`corr_macro.py`): DXY
+  r=−0,36 (mais forte que USD/BRL −0,24) e quase independente dele
+  (r≈0,18) → adiciona sinal, não repete. Brent −0,23 instável
+  (validou a remoção); minério ~0 no diário (fica no Petro&Vale);
+  VIX −0,39 e EEM +0,46 (semi-circular) como candidatos futuros.
+- Card agora: S&P 500 · **DXY** · Dólar · DI. DXY via `DX-Y.NYB` (ICE),
+  DXY↑ → contra o índice. Nova coluna `dxy/dxy_var` em `macro_snapshots`
+  (migração `ALTER … ADD COLUMN`).
+
 ### Macro: Brent → S&P 500 (driver global do IBOV)
 - Card MACRO troca o Brent pelo **S&P 500** (E-mini futuro `ES=F` via
   Yahoo — negocia quase 24h, o índice à vista `^GSPC` fica parado antes

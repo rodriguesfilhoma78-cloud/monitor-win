@@ -67,7 +67,11 @@ YAHOO_CHART   = ("https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                  "?range=1d&interval=15m")
 MACRO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 MACRO_POLL    = 30                            # segundos entre consultas
-MACRO_SYMBOLS = {"sp500": "ES=F", "dolar": "USDBRL=X"}
+# DXY = dolar global (indice ICE contra cesta de moedas). Correlacao
+# diaria com o IBOV (-0,36 em 1 ano) mais forte que a do USD/BRL e quase
+# independente dele (r~0,18) — carrega o "fluxo p/ emergentes" que o
+# cambio BRL sozinho nao mostra. DXY sobe -> IBOV tende a cair.
+MACRO_SYMBOLS = {"sp500": "ES=F", "dxy": "DX-Y.NYB", "dolar": "USDBRL=X"}
 MACRO_RTD_CSV = BASE_DIR / "dados_macro_rtd.csv"  # VBA (ExportarMacroRTD)
 RTD_MAX_AGE   = 180                           # s sem update = desatualizado
 
@@ -423,6 +427,7 @@ class SnapshotDB:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     dia TEXT, ts TEXT,
                     sp500 REAL, sp500_var REAL,
+                    dxy REAL, dxy_var REAL,
                     dolar REAL, dolar_var REAL,
                     di REAL, di_var_bps REAL
                 )""")
@@ -433,6 +438,12 @@ class SnapshotDB:
                                 f"RENAME COLUMN {old} TO {new}")
                 except sqlite3.OperationalError:
                     pass                     # coluna ja renomeada/inexistente
+            # DXY adicionado depois da criacao original da tabela
+            for col in ("dxy", "dxy_var"):
+                try:
+                    con.execute(f"ALTER TABLE macro_snapshots ADD COLUMN {col} REAL")
+                except sqlite3.OperationalError:
+                    pass                     # coluna ja existe
             # snapshots antigos nao tinham a coluna de data
             try:
                 con.execute("ALTER TABLE snapshots ADD COLUMN dia TEXT")
@@ -489,16 +500,18 @@ class SnapshotDB:
                  ev.get("evento"), ev.get("direcao"), ev.get("nivel"),
                  ev.get("delta_ema"), ev.get("msg")))
 
-    def save_macro_sync(self, sp500: Optional[dict], dolar: Optional[dict],
-                        di: Optional[dict]):
+    def save_macro_sync(self, sp500: Optional[dict], dxy: Optional[dict],
+                        dolar: Optional[dict], di: Optional[dict]):
         """Historico macro para analise de correlacao com o WIN."""
         g = lambda d, k: d.get(k) if d else None
         with sqlite3.connect(self.path) as con:
             con.execute(
                 "INSERT INTO macro_snapshots (dia,ts,sp500,sp500_var,"
-                "dolar,dolar_var,di,di_var_bps) VALUES (?,?,?,?,?,?,?,?)",
+                "dxy,dxy_var,dolar,dolar_var,di,di_var_bps) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (date.today().isoformat(), time.strftime("%H:%M:%S"),
                  g(sp500, "preco"), g(sp500, "var_pct"),
+                 g(dxy, "preco"), g(dxy, "var_pct"),
                  g(dolar, "preco"), g(dolar, "var_pct"),
                  g(di, "taxa"), g(di, "var_bps")))
 
@@ -886,6 +899,7 @@ async def macro_loop():
                 last_macro = {
                     "evento": "macro",
                     "sp500": quotes.get("sp500"),
+                    "dxy": quotes.get("dxy"),
                     "dolar": dolar,
                     "di": di,
                     "ts": time.strftime("%H:%M:%S"),
@@ -893,7 +907,7 @@ async def macro_loop():
                 await manager.broadcast(last_macro)
                 await loop.run_in_executor(
                     None, db.save_macro_sync,
-                    quotes.get("sp500"), dolar, di)
+                    quotes.get("sp500"), quotes.get("dxy"), dolar, di)
             await asyncio.sleep(MACRO_POLL)
 
 
