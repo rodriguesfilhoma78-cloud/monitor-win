@@ -23,6 +23,20 @@ Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
   (Brent↑, Dólar↓ e DI↓ favorecem) e banner de alinhamento
   favorável/contrário/misto com a variação do WIN (vs. FEC).
 
+### Fix: Blue Chips não atualizava (auto-start faltando)
+- Causa raiz: o `Workbook_Open` (em EstaPastaDeTrabalho do
+  `WDO_Master_RTD.xlsm`) iniciava WIN, PETR4 e PetroVale, mas **nunca
+  chamava `IniciarExportBlueChips`** — o `dados_blue_chips.csv` ficava
+  congelado no último pregão em que o export foi ligado à mão. O próprio
+  cabeçalho do `ModuloBlueChips` já pedia essa linha; ela nunca foi
+  adicionada. Corrigido via COM: `OnTime +16s "IniciarExportBlueChips"`.
+- `ExportarBlueChips.bas`: módulo exportado para o disco (faltava no
+  repo — só existia dentro da planilha). **Salvar o .xlsm** para o
+  Workbook_Open persistir.
+- `dashboard_win.html`: tabela Blue Chips ganhou espaçamento entre
+  colunas (`.bctbl`, padding 8px + `white-space:nowrap` nos números) —
+  na coluna central mais estreita os valores colavam (−2,35%11,2%).
+
 ### Selo de alinhamento no topo do card MACRO
 - O preço grande do Brent saiu do cabeçalho do card (segue na linha
   dele); no lugar entrou o selo de viés estilo monitor PETR4:
