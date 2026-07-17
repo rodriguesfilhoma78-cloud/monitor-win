@@ -384,8 +384,10 @@ function updateDist(){
   // Regua de precos: R3 no topo ... S3 embaixo (zona decisiva no meio)
   for(let i = NIV.resistencias.length-1; i >= 0; i--)
     rows.push({label:`R${i+1} ${fmt(NIV.resistencias[i])}`, d:NIV.resistencias[i]-p, cls:"up", hit:hitUp(NIV.resistencias[i])});
-  rows.push({label:`ZD↑ ${fmt(NIV.zona_decisiva.max)}`, d:NIV.zona_decisiva.max-p, cls:"amber", hit:hitUp(NIV.zona_decisiva.max)});
-  rows.push({label:`ZD↓ ${fmt(NIV.zona_decisiva.min)}`, d:NIV.zona_decisiva.min-p, cls:"amber", hit:hitDn(NIV.zona_decisiva.min)});
+  // ZD↑/ZD↓ são o gatilho do plano (não alvo) — nunca riscam aqui, só os
+  // alvos R/S de fato atingidos ficam riscados na lista de distância.
+  rows.push({label:`ZD↑ ${fmt(NIV.zona_decisiva.max)}`, d:NIV.zona_decisiva.max-p, cls:"amber", hit:false});
+  rows.push({label:`ZD↓ ${fmt(NIV.zona_decisiva.min)}`, d:NIV.zona_decisiva.min-p, cls:"amber", hit:false});
   NIV.suportes.forEach((s,i)=>rows.push({label:`S${i+1} ${fmt(s)}`, d:s-p, cls:"down", hit:hitDn(s)}));
   let nearest = 0;
   rows.forEach((r,i)=>{ if(Math.abs(r.d) < Math.abs(rows[nearest].d)) nearest = i; });
