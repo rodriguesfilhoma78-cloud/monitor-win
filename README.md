@@ -7,14 +7,26 @@ Sistema completo e separado do Mapa de Tendência WDO. Roda em paralelo
 
 ```
 monitor_win\
-├── server_win.py        # Servidor FastAPI + WebSocket + API de níveis
-├── dashboard_win.html   # Dashboard (servido pelo próprio server em /)
-├── niveis.json          # Níveis do dia (editável — sem reiniciar o server)
-├── ExportarWIN.bas      # Módulo VBA para o Excel (exporta dados_win.csv)
+├── server_win.py            # Servidor FastAPI + WebSocket + API de níveis (back-end)
+├── iniciar_win.bat          # Sobe o server se a porta 8001 estiver livre
 ├── requirements.txt
-├── dados_win.csv        # (gerado pelo VBA em tempo de execução)
-└── win_history.db       # (gerado automaticamente — snapshots SQLite)
+├── frontend\                # Dashboard (servido pelo próprio server em /)
+│   ├── dashboard_win.html   #   estrutura da página
+│   ├── style.css            #   estilos
+│   └── app.js               #   lógica (WebSocket, régua, alertas, macro…)
+├── excel\                   # Módulos VBA (importar no Excel; não rodam daqui)
+│   ├── ExportarWIN.bas      #   exporta dados_win.csv + dados_macro_rtd.csv
+│   └── ExportarBlueChips.bas#   exporta dados_blue_chips.csv
+├── docs\
+│   └── CHANGELOG.md
+├── niveis.json              # Níveis do dia (editável — sem reiniciar o server)
+├── dados_win.csv            # (gerado pelo VBA em tempo de execução — na RAIZ)
+└── win_history.db           # (gerado automaticamente — snapshots SQLite)
 ```
+
+> **Importante:** os CSVs de runtime, o `niveis.json` e o `.db` continuam na
+> **raiz** — é onde o VBA grava (caminho fixo nos `.bas`) e onde o server lê.
+> Não mova esses arquivos para dentro das pastas.
 
 ## Instalação (uma vez)
 
@@ -89,6 +101,10 @@ curl -X POST http://127.0.0.1:8001/niveis -H "Content-Type: application/json" -d
 | `/niveis/recalcular` | POST | Força recálculo pelos pivots do pregão anterior |
 | `/historico/{dia}` | GET | Pacote do pregão (OHLC, níveis, sinais, snapshots) p/ análise |
 | `/perfil/{dia}` | GET | Perfil de volume: POC, value area e histograma por preço (`?bucket=50`) |
+| `/operacoes` | GET | Operações do trader no dia + a aberta (se houver) |
+| `/operacoes` | POST | Registra entrada (`{"tipo":"compra"\|"venda","motivo":"..."}`) |
+| `/operacoes/fechar` | POST | Fecha a operação aberta e grava o resultado |
+| `/operacoes/stats` | GET | Taxa de acerto / média / total por tipo+motivo |
 | `/ultimo` | GET    | Último tick recebido (debug rápido)        |
 
 ## Perfil de volume (régua por acúmulo)
@@ -99,6 +115,29 @@ preço (bucket de 50 pts) em que ocorreu. O dashboard pinta as faixas de
 maior acúmulo como bandas azuis na régua + linha **POC** (preço com mais
 negócios), atualizadas a cada 2 min. Pivots = projeção do dia anterior;
 acúmulo = memória real de onde o mercado negociou — os dois convivem.
+
+## Registro de operações (fase 1 do aprendizado por imitação)
+
+Card **REGISTRO DO TRADER** no dashboard. A cada entrada real, o trader
+escolhe o motivo (rompimento, pullback, fluxo…) e clica **▲ COMPREI** ou
+**▼ VENDI**; ao encerrar, **✖ SAÍ**. Regras de ouro:
+
+- **Registrar TODAS as operações, ganhe ou perca.** Só as vencedoras =
+  viés de sobrevivência; as perdas ensinam tanto quanto os ganhos.
+- O preço e o **contexto completo** (tick, níveis, macro, blue chips,
+  fluxo EMA, plano) são capturados **pelo servidor** no instante do
+  clique e gravados na tabela `operacoes` do `win_history.db`.
+- **Nota livre (opcional, vale ouro):** campo de texto para o raciocínio
+  da entrada ("fluxo virou na VWAP…") e da saída ("saí no alvo / no
+  medo / no stop"). Não é obrigatório — a tag é o mínimo; a nota é o
+  bônus que a análise por IA lê depois para agrupar padrões de
+  raciocínio e cruzar com o resultado.
+- Uma operação aberta por vez; registro **bloqueado no simulador**.
+
+Com o dataset acumulado, `GET /operacoes/stats` responde com números o
+que cada padrão do trader rende (taxa de acerto, média em pts). É a base
+das fases seguintes: análise de padrões → copiloto que aponta contextos
+similares → (só com edge provado) discussão de automação.
 
 ## Testar sem o pregão
 

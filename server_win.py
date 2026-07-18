@@ -45,7 +45,8 @@ CSV_PATH      = BASE_DIR / "dados_win.csv"       # gerado pelo VBA (ExportarWIN)
 BLUE_CHIPS_CSV = BASE_DIR / "dados_blue_chips.csv"  # gerado pelo VBA (ExportarBlueChips)
 NIVEIS_PATH   = BASE_DIR / "niveis.json"         # niveis do dia (editavel)
 DB_PATH       = BASE_DIR / "win_history.db"
-DASHBOARD     = BASE_DIR / "dashboard_win.html"
+FRONTEND_DIR  = BASE_DIR / "frontend"
+DASHBOARD     = FRONTEND_DIR / "dashboard_win.html"
 POLL_INTERVAL = 1.0        # segundos entre leituras do CSV
 SNAPSHOT_EVERY = 2         # segundos entre snapshots no SQLite (resolucao
                            # do perfil de volume; ~12k linhas/dia no WIN)
@@ -431,6 +432,30 @@ class SnapshotDB:
                     dolar REAL, dolar_var REAL,
                     di REAL, di_var_bps REAL
                 )""")
+            # Fase 1 do aprendizado por imitacao: cada operacao do trader
+            # e gravada com a FOTO do contexto de mercado no momento da
+            # entrada (tick + niveis + macro + blue chips + fluxo). Com o
+            # tempo, esse dataset revela os padroes por tras das decisoes.
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS operacoes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dia TEXT, ts TEXT,
+                    tipo TEXT,             -- 'compra' | 'venda'
+                    motivo TEXT,           -- tag escolhida pelo trader
+                    preco_entrada REAL,
+                    ts_saida TEXT,
+                    preco_saida REAL,
+                    resultado_pts REAL,    -- sinalizado pela direcao
+                    contexto TEXT,         -- JSON: foto do mercado na entrada
+                    nota_entrada TEXT,     -- raciocinio livre do trader (opcional)
+                    nota_saida TEXT        -- por que saiu (alvo? stop? medo?)
+                )""")
+            # migracao: tabela criada antes das notas livres
+            for col in ("nota_entrada", "nota_saida"):
+                try:
+                    con.execute(f"ALTER TABLE operacoes ADD COLUMN {col} TEXT")
+                except sqlite3.OperationalError:
+                    pass                     # coluna ja existe
             # migracao: tabelas criadas com Brent (17/07 cedo) -> S&P 500
             for old, new in (("brent", "sp500"), ("brent_var", "sp500_var")):
                 try:
@@ -616,6 +641,101 @@ class SnapshotDB:
             n["dados"] = json.loads(n["dados"])
         return {"dia": dia, "ohlc": dict(ohlc) if ohlc else None,
                 "niveis": nivs, "eventos": evs, "snapshots": snaps}
+
+    # ---- operacoes do trader (fase 1 do aprendizado por imitacao) ----
+
+    def op_aberta_sync(self) -> Optional[dict]:
+        """Operacao em andamento (sem saida), se houver. Uma por vez."""
+        with sqlite3.connect(self.path) as con:
+            con.row_factory = sqlite3.Row
+            row = con.execute(
+                "SELECT * FROM operacoes WHERE preco_saida IS NULL "
+                "ORDER BY id DESC LIMIT 1").fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["contexto"] = json.loads(d["contexto"]) if d["contexto"] else None
+        return d
+
+    def op_abrir_sync(self, tipo: str, motivo: str, preco: float,
+                      contexto: dict, nota: Optional[str]) -> dict:
+        """Registra a entrada. O resultado fica em aberto ate op_fechar."""
+        dia = date.today().isoformat()
+        ts = time.strftime("%H:%M:%S")
+        with sqlite3.connect(self.path) as con:
+            cur = con.execute(
+                "INSERT INTO operacoes (dia,ts,tipo,motivo,preco_entrada,"
+                "contexto,nota_entrada) VALUES (?,?,?,?,?,?,?)",
+                (dia, ts, tipo, motivo, preco,
+                 json.dumps(contexto, ensure_ascii=False), nota))
+            return {"id": cur.lastrowid, "dia": dia, "ts": ts, "tipo": tipo,
+                    "motivo": motivo, "preco_entrada": preco,
+                    "nota_entrada": nota}
+
+    def op_fechar_sync(self, op_id: int, preco: float,
+                       nota: Optional[str]) -> Optional[dict]:
+        """Fecha a operacao e calcula o resultado em pontos.
+
+        Compra: saida - entrada. Venda: entrada - saida. Ganho E perda sao
+        gravados igualmente — as operacoes erradas ensinam tanto quanto as
+        certas (sem elas o dataset vira vies de sobrevivencia).
+        """
+        ts = time.strftime("%H:%M:%S")
+        with sqlite3.connect(self.path) as con:
+            con.row_factory = sqlite3.Row
+            row = con.execute(
+                "SELECT * FROM operacoes WHERE id=? AND preco_saida IS NULL",
+                (op_id,)).fetchone()
+            if row is None:
+                return None
+            sinal = 1 if row["tipo"] == "compra" else -1
+            resultado = round((preco - row["preco_entrada"]) * sinal, 1)
+            con.execute(
+                "UPDATE operacoes SET ts_saida=?, preco_saida=?, "
+                "resultado_pts=?, nota_saida=? WHERE id=?",
+                (ts, preco, resultado, nota, op_id))
+        return {"id": op_id, "ts_saida": ts, "preco_saida": preco,
+                "resultado_pts": resultado, "nota_saida": nota}
+
+    def ops_do_dia_sync(self, dia: str) -> list[dict]:
+        """Operacoes do dia (abertas e fechadas), mais recentes primeiro.
+        Sem o contexto (pesado) — ele e para analise, nao para o card."""
+        with sqlite3.connect(self.path) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT id,dia,ts,tipo,motivo,preco_entrada,ts_saida,"
+                "preco_saida,resultado_pts,nota_entrada,nota_saida "
+                "FROM operacoes WHERE dia=? ORDER BY id DESC",
+                (dia,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def ops_stats_sync(self) -> dict:
+        """Estatisticas das operacoes fechadas: geral e por tipo+motivo.
+        E a resposta objetiva a 'quais padroes do trader funcionam?'."""
+        with sqlite3.connect(self.path) as con:
+            con.row_factory = sqlite3.Row
+            geral = con.execute(
+                "SELECT COUNT(*) n, "
+                "SUM(CASE WHEN resultado_pts>0 THEN 1 ELSE 0 END) acertos, "
+                "ROUND(AVG(resultado_pts),1) media_pts, "
+                "ROUND(SUM(resultado_pts),1) total_pts "
+                "FROM operacoes WHERE resultado_pts IS NOT NULL").fetchone()
+            padroes = con.execute(
+                "SELECT tipo, motivo, COUNT(*) n, "
+                "SUM(CASE WHEN resultado_pts>0 THEN 1 ELSE 0 END) acertos, "
+                "ROUND(AVG(resultado_pts),1) media_pts, "
+                "ROUND(SUM(resultado_pts),1) total_pts "
+                "FROM operacoes WHERE resultado_pts IS NOT NULL "
+                "GROUP BY tipo, motivo ORDER BY n DESC").fetchall()
+        g = dict(geral)
+        g["taxa_acerto"] = (round(g["acertos"] / g["n"] * 100, 1)
+                            if g["n"] else None)
+        pats = []
+        for r in padroes:
+            p = dict(r)
+            p["taxa_acerto"] = round(p["acertos"] / p["n"] * 100, 1)
+            pats.append(p)
+        return {"geral": g, "por_padrao": pats}
 
 
 # ----------------------------------------------------------------
@@ -971,6 +1091,19 @@ async def dashboard():
     return FileResponse(DASHBOARD)
 
 
+# Assets do dashboard (frontend/ separado em HTML + CSS + JS).
+# O HTML referencia por caminho relativo, entao servimos na raiz.
+@app.get("/style.css")
+async def dashboard_css():
+    return FileResponse(FRONTEND_DIR / "style.css", media_type="text/css")
+
+
+@app.get("/app.js")
+async def dashboard_js():
+    return FileResponse(FRONTEND_DIR / "app.js",
+                        media_type="application/javascript")
+
+
 @app.get("/niveis")
 async def get_niveis():
     return JSONResponse(levels.load())
@@ -1035,6 +1168,118 @@ async def get_blue_chips():
 async def get_plano_ativacao():
     """Hora real de ativacao dos gatilhos de compra/venda do plano hoje."""
     return last_plano_ativacao or {"compra": None, "venda": None}
+
+
+# ----------------------------------------------------------------
+# OPERACOES DO TRADER (fase 1 do aprendizado por imitacao)
+# ----------------------------------------------------------------
+def montar_contexto_operacao() -> dict:
+    """Foto completa do mercado no instante da entrada do trader.
+
+    E o 'padrao' que o trader viu, em numeros: o que o preco fazia, onde
+    estava em relacao aos niveis, o que macro/blue chips/fluxo diziam.
+    O trader so clica; a captura e toda automatica — se depender de
+    digitacao, o registro morre no terceiro dia de pregao.
+    """
+    cfg = levels.load()
+    bc = last_blue_chips or {}
+    return {
+        "tick": asdict(last_tick) if last_tick else None,
+        "niveis": {k: cfg.get(k) for k in
+                   ("contrato", "data_pregao", "fonte", "pivot",
+                    "resistencias", "suportes", "zona_decisiva")},
+        "macro": {k: last_macro.get(k) for k in
+                  ("sp500", "dxy", "dolar", "di")} if last_macro else None,
+        "blue_chips": {"vies": bc.get("vies"),
+                       "positivas": bc.get("positivas"),
+                       "negativas": bc.get("negativas")} if bc else None,
+        "fluxo_ema": round(engine.flow_ema, 1)
+                     if engine.flow_ema is not None else None,
+        "plano_ativacao": last_plano_ativacao,
+    }
+
+
+@app.get("/operacoes")
+async def get_operacoes():
+    """Operacoes do dia + a operacao em aberto (se houver)."""
+    loop = asyncio.get_running_loop()
+    dia = date.today().isoformat()
+    ops = await loop.run_in_executor(None, db.ops_do_dia_sync, dia)
+    aberta = await loop.run_in_executor(None, db.op_aberta_sync)
+    if aberta:
+        aberta.pop("contexto", None)         # pesado; so para analise
+    return {"dia": dia, "aberta": aberta, "operacoes": ops}
+
+
+@app.post("/operacoes")
+async def abrir_operacao(data: dict):
+    """Registra uma ENTRADA do trader no preco atual do mercado.
+
+    Body: {"tipo": "compra"|"venda", "motivo": "rompimento"|...}
+    O preco vem do ultimo tick do servidor (nao do cliente) e o contexto
+    e fotografado aqui — fonte unica de verdade, imune a atraso do browser.
+    Uma operacao aberta por vez: espelha o trade manual de 1 posicao e
+    mantem a semantica do resultado inequivoca.
+    """
+    tipo = data.get("tipo")
+    if tipo not in ("compra", "venda"):
+        return JSONResponse({"erro": "tipo deve ser 'compra' ou 'venda'"},
+                            status_code=400)
+    if last_tick is None or last_tick.ultimo is None:
+        return JSONResponse(
+            {"erro": "sem preco de mercado (CSV do Excel parado?)"},
+            status_code=409)
+    loop = asyncio.get_running_loop()
+    aberta = await loop.run_in_executor(None, db.op_aberta_sync)
+    if aberta:
+        return JSONResponse(
+            {"erro": f"ja existe {aberta['tipo']} aberta em "
+                     f"{aberta['preco_entrada']:.0f} — feche antes"},
+            status_code=409)
+    motivo = (data.get("motivo") or "sem tag").strip()[:40]
+    nota = (data.get("nota") or "").strip()[:500] or None
+    contexto = montar_contexto_operacao()
+    op = await loop.run_in_executor(
+        None, db.op_abrir_sync, tipo, motivo, last_tick.ultimo, contexto,
+        nota)
+    print(f"[WIN] Operacao registrada: {tipo} @ {last_tick.ultimo:.0f} "
+          f"({motivo})")
+    await manager.broadcast({"evento": "operacoes_atualizadas"})
+    return op
+
+
+@app.post("/operacoes/fechar")
+async def fechar_operacao(data: Optional[dict] = None):
+    """Fecha a operacao em aberto no preco atual e grava o resultado.
+    Body opcional: {"nota": "por que saiu (alvo? stop? sentimento?)"}
+    """
+    if last_tick is None or last_tick.ultimo is None:
+        return JSONResponse(
+            {"erro": "sem preco de mercado (CSV do Excel parado?)"},
+            status_code=409)
+    loop = asyncio.get_running_loop()
+    aberta = await loop.run_in_executor(None, db.op_aberta_sync)
+    if aberta is None:
+        return JSONResponse({"erro": "nenhuma operacao em aberto"},
+                            status_code=404)
+    nota = ((data or {}).get("nota") or "").strip()[:500] or None
+    res = await loop.run_in_executor(
+        None, db.op_fechar_sync, aberta["id"], last_tick.ultimo, nota)
+    aberta.pop("contexto", None)             # pesado; fica so no banco
+    print(f"[WIN] Operacao fechada: {aberta['tipo']} "
+          f"{aberta['preco_entrada']:.0f} -> {last_tick.ultimo:.0f} "
+          f"= {res['resultado_pts']:+.0f} pts")
+    await manager.broadcast({"evento": "operacoes_atualizadas"})
+    return {**aberta, **res}
+
+
+@app.get("/operacoes/stats")
+async def get_operacoes_stats():
+    """Estatisticas acumuladas das operacoes fechadas (todos os dias):
+    taxa de acerto, media e total de pontos — geral e por tipo+motivo.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, db.ops_stats_sync)
 
 
 @app.get("/macro")

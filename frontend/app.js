@@ -1,184 +1,8 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Monitor WIN — Tempo Real</title>
-<style>
-  :root{
-    --bg:#0b0f14; --panel:#121820; --panel2:#0f141b; --line:#1e2833;
-    --txt:#c8d2dc; --dim:#6b7a89; --green:#2bd576; --red:#ff4d5e;
-    --amber:#f0b429; --blue:#4da3ff;
-    --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,Consolas,monospace;
-    --sans:"Segoe UI",system-ui,sans-serif;
-  }
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--txt);font-family:var(--sans);min-height:100vh}
-  header{display:flex;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-  header h1{font-family:var(--mono);font-size:22px;letter-spacing:2px;color:#fff}
-  header h1 span{color:var(--green)}
-  #contrato{font-family:var(--mono);font-size:12px;color:var(--amber);border:1px solid var(--line);padding:4px 10px;border-radius:6px}
-  .status{margin-left:auto;display:flex;gap:14px;align-items:center;font-family:var(--mono);font-size:12px;flex-wrap:wrap}
-  .dot{width:9px;height:9px;border-radius:50%;background:var(--red);display:inline-block;margin-right:6px;vertical-align:middle}
-  .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
-  .dot.sim{background:var(--amber);box-shadow:0 0 8px var(--amber)}
-  main{display:grid;grid-template-columns:150px 1fr 300px;gap:14px;padding:14px 20px;max-width:1280px;margin:0 auto}
-  @media(max-width:900px){main{grid-template-columns:1fr}.ladder-wrap{order:2}.right{order:3}}
-  .ladder-wrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 10px;position:relative}
-  .ladder-title{font-family:var(--mono);font-size:11px;color:var(--dim);text-align:center;margin-bottom:10px;letter-spacing:1px}
-  .ladder{position:relative;height:560px;margin:0 8px}
-  .rail{position:absolute;left:50%;top:0;bottom:0;width:2px;background:var(--line);transform:translateX(-50%)}
-  .lvl{position:absolute;left:0;right:0;transform:translateY(50%);display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px}
-  .lvl .tick{flex:1;height:1px;background:currentColor;opacity:.5}
-  .lvl.res{color:var(--green)} .lvl.sup{color:var(--red)}
-  .lvl b{white-space:nowrap}
-  .zone{position:absolute;left:8%;right:8%;background:rgba(240,180,41,.08);border-top:1px dashed var(--amber);border-bottom:1px dashed var(--amber)}
-  .vol-band{position:absolute;left:24%;right:24%;background:var(--blue);pointer-events:none;border-radius:1px}
-  .lvl.poc{color:var(--blue)}
-  .price-marker{position:absolute;left:-6px;right:-6px;transform:translateY(50%);transition:bottom .35s ease}
-  .price-marker .tag{position:absolute;left:50%;transform:translate(-50%,50%);background:#fff;color:#000;font-family:var(--mono);font-weight:700;font-size:13px;padding:2px 8px;border-radius:4px;white-space:nowrap;box-shadow:0 0 14px rgba(255,255,255,.35)}
-  .price-marker .lineflag{position:absolute;left:0;right:0;height:2px;background:#fff;opacity:.85}
-  .center{display:flex;flex-direction:column;gap:14px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
-  .bigprice{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
-  .bigprice .px{font-family:var(--mono);font-size:52px;font-weight:700;color:#fff}
-  .bigprice .var{font-family:var(--mono);font-size:20px}
-  .up{color:var(--green)} .down{color:var(--red)} .flat{color:var(--dim)}
-  .bias{margin-top:8px;font-family:var(--mono);font-size:14px;padding:8px 12px;border-radius:6px;display:inline-block}
-  .bias.buy{background:rgba(43,213,118,.12);color:var(--green);border:1px solid rgba(43,213,118,.4)}
-  .bias.sell{background:rgba(255,77,94,.12);color:var(--red);border:1px solid rgba(255,77,94,.4)}
-  .bias.neutral{background:rgba(240,180,41,.10);color:var(--amber);border:1px solid rgba(240,180,41,.4)}
-  canvas{width:100%;height:180px;display:block}
-  .grid2{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:4px}
-  @media(max-width:600px){.grid2{grid-template-columns:repeat(2,1fr)}}
-  .stat{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px}
-  .stat .k{font-size:11px;color:var(--dim);letter-spacing:.5px}
-  .stat .v{font-family:var(--mono);font-size:18px;margin-top:4px;color:#fff}
-  .right{display:flex;flex-direction:column;gap:14px}
-  .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
-  @media(max-width:900px){.row2{grid-template-columns:1fr}}
-  .bctbl{width:100%;font-family:var(--mono);font-size:12px;border-collapse:collapse;table-layout:auto}
-  .bctbl th,.bctbl td{padding:4px 8px}
-  .bctbl th:first-child,.bctbl td:first-child{padding-left:0}
-  .bctbl th:last-child,.bctbl td:last-child{padding-right:0}
-  .bctbl td.num{text-align:right;white-space:nowrap}
-  .bctbl th{white-space:nowrap;font-weight:400}
-  .card h3{font-size:12px;letter-spacing:1.5px;color:var(--dim);margin-bottom:10px;font-family:var(--mono)}
-  .dist{display:flex;justify-content:space-between;font-family:var(--mono);font-size:13px;padding:6px 0;border-bottom:1px dashed var(--line)}
-  .dist:last-child{border-bottom:none}
-  .dist.near{background:rgba(77,163,255,.12);border-radius:4px;padding-left:6px;padding-right:6px;border-bottom-style:solid}
-  .amber{color:var(--amber)}
-  #plano s, #distList s{color:var(--dim);margin-right:4px}
-  .hitflag{display:inline-block;font-size:11px;margin-left:4px}
-  .macro-row{display:flex;justify-content:space-between;align-items:center;font-family:var(--mono);font-size:13px;padding:7px 0;border-bottom:1px dashed var(--line);gap:6px}
-  .macro-row:last-child{border-bottom:none}
-  .macro-row .nome small{display:block;color:var(--dim);font-size:10px}
-  .macro-row .seta{font-size:14px;width:20px;text-align:center;flex:none}
-  .align-banner{margin:0 0 10px;font-family:var(--mono);font-size:12px;padding:8px 10px;border-radius:6px}
-  .align-banner.fav{border:1px solid rgba(43,213,118,.45);background:rgba(43,213,118,.10);color:var(--green)}
-  .align-banner.contra{border:1px solid rgba(255,77,94,.45);background:rgba(255,77,94,.10);color:var(--red)}
-  .align-banner.misto{border:1px solid rgba(240,180,41,.45);background:rgba(240,180,41,.10);color:var(--amber)}
-  .alerts{max-height:220px;overflow-y:auto;font-family:var(--mono);font-size:12px}
-  .alert-item{padding:7px 9px;border-radius:6px;margin-bottom:6px;background:var(--panel2);border-left:3px solid var(--blue)}
-  .alert-item.res{border-left-color:var(--green)} .alert-item.sup{border-left-color:var(--red)}
-  .alert-item.conf{border-left-color:var(--amber);background:rgba(240,180,41,.10);color:#ffe9b0;font-weight:700}
-  .alert-item.dive{border-left-color:var(--blue);background:rgba(77,163,255,.08)}
-  .alert-item time{color:var(--dim);margin-right:8px}
-  .btn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);font-family:var(--mono);font-size:12px;padding:7px 12px;border-radius:6px;cursor:pointer}
-  .btn:hover{border-color:var(--blue);color:#fff}
-  .btn:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
-  .flash{animation:flash .6s ease 3}
-  @keyframes flash{0%,100%{box-shadow:none}50%{box-shadow:0 0 24px rgba(240,180,41,.8)}}
-  @media(prefers-reduced-motion:reduce){.price-marker{transition:none}.flash{animation:none}}
-  footer{text-align:center;color:var(--dim);font-size:11px;padding:14px;font-family:var(--mono)}
-</style>
-</head>
-<body>
-<header>
-  <h1>WIN<span> MONITOR</span></h1>
-  <span id="contrato">carregando níveis…</span>
-  <div class="status">
-    <span><span id="connDot" class="dot"></span><span id="connTxt">desconectado</span></span>
-    <span id="lastUpdate">--:--:--</span>
-    <button class="btn" id="btnSim">▶ Simulador</button>
-    <button class="btn" id="btnSound">🔔 Som: ON</button>
-  </div>
-</header>
+/* ================================================================
+   Monitor WIN — lógica do dashboard
+   (extraído de dashboard_win.html; servido pelo server em /app.js)
+   ================================================================ */
 
-<main>
-  <div class="ladder-wrap">
-    <div class="ladder-title">RÉGUA DO PREGÃO</div>
-    <div class="ladder" id="ladder"><div class="rail"></div></div>
-  </div>
-
-  <div class="center">
-    <div class="card" id="priceCard">
-      <div class="bigprice">
-        <span class="px" id="px">—</span>
-        <span class="var flat" id="pxVar">+0 pts (0,00%)</span>
-      </div>
-      <div class="bias neutral" id="bias">⏳ Aguardando dados…</div>
-    </div>
-
-    <div class="card">
-      <h3>ÚLTIMOS TICKS</h3>
-      <canvas id="spark" width="800" height="180"></canvas>
-    </div>
-
-    <div class="grid2">
-      <div class="stat"><div class="k">ABERTURA</div><div class="v" id="stAbert">—</div></div>
-      <div class="stat"><div class="k">MÁXIMA</div><div class="v up" id="stMax">—</div></div>
-      <div class="stat"><div class="k">MÍNIMA</div><div class="v down" id="stMin">—</div></div>
-      <div class="stat"><div class="k">VOLUME</div><div class="v" id="stVol">—</div></div>
-      <div class="stat"><div class="k">AGR. COMPRA</div><div class="v up" id="stAgrC">—</div></div>
-      <div class="stat"><div class="k">AGR. VENDA</div><div class="v down" id="stAgrV">—</div></div>
-      <div class="stat"><div class="k">DELTA</div><div class="v" id="stDelta">—</div></div>
-      <div class="stat"><div class="k">VWAP</div><div class="v" id="stVwap">—</div></div>
-    </div>
-
-    <div class="row2">
-      <div class="card">
-        <h3>ALERTAS</h3>
-        <div class="alerts" id="alerts"><div class="alert-item"><time>—</time>Nenhum alerta ainda.</div></div>
-      </div>
-      <div class="card">
-        <h3>BLUE CHIPS — FLUXO IBOVESPA</h3>
-        <table class="bctbl">
-          <thead><tr style="color:var(--dim)">
-            <th style="text-align:left">Ativo</th>
-            <th style="text-align:right">Último</th>
-            <th style="text-align:right">Var%</th>
-            <th style="text-align:right">Peso</th>
-            <th style="text-align:right">Fluxo</th>
-          </tr></thead>
-          <tbody id="bcBody"><tr><td colspan="5" class="flat" style="padding:6px 0">Aguardando…</td></tr></tbody>
-        </table>
-        <div class="dist" style="margin-top:8px;border-bottom:none" id="bcBias">
-          <span class="flat">Aguardando dados…</span>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="right">
-    <div class="card">
-      <h3>MACRO — IMPACTO NO IBOV</h3>
-      <div id="macroBanner"></div>
-      <div id="macroRows"><div class="dist"><span class="flat">Aguardando dados…</span></div></div>
-    </div>
-    <div class="card">
-      <h3>DISTÂNCIA AOS NÍVEIS</h3>
-      <div id="distList"><div class="dist"><span class="flat">—</span></div></div>
-    </div>
-    <div class="card">
-      <h3>PLANO DO DIA</h3>
-      <div id="plano"></div>
-    </div>
-  </div>
-</main>
-<footer>Profit Pro RTD → Excel/VBA → CSV → FastAPI (porta 8001) → WebSocket · Ferramenta de estudo — não é recomendação de investimento.</footer>
-
-<script>
 /* ============ NÍVEIS: carregados do servidor (/niveis) ============ */
 let NIV = null;               // preenchido via fetch
 const API = location.protocol.startsWith("http") ? "" : "http://127.0.0.1:8001";
@@ -517,11 +341,13 @@ function render(){
   }
   $("lastUpdate").textContent = new Date().toLocaleTimeString("pt-BR");
   updateBias(); updateDist(); buildPlano(); drawSpark(); renderMacro();
+  updateOpPnl();
 }
 
 /* ============ INGESTÃO ============ */
 function onTick(data){
   if(data.evento === "niveis_atualizados"){ loadNiveis(); return; }
+  if(data.evento === "operacoes_atualizadas"){ loadOps(); return; }
   if(data.evento === "blue_chips"){ renderBlueChips(data); return; }
   if(data.evento === "plano_ativacao"){
     S.planoAtiv = {compra:data.compra ?? null, venda:data.venda ?? null};
@@ -600,6 +426,121 @@ async function loadBlueChipsInicial(){
   }catch(e){}
 }
 
+/* ============ REGISTRO DO TRADER (fase 1 do aprendizado) ============ */
+/* O trader clica ao ENTRAR (toda entrada, ganhe ou perca) e ao SAIR.
+   Preco e contexto sao capturados pelo SERVIDOR no instante do clique —
+   aqui so dispara o pedido e desenha o estado. */
+let OPS = { aberta: null, operacoes: [] };
+
+async function loadOps(){
+  try{
+    const r = await fetch(API + "/operacoes");
+    const d = await r.json();
+    OPS = { aberta: d.aberta || null, operacoes: d.operacoes || [] };
+  }catch(e){ OPS = { aberta: null, operacoes: [] }; }
+  renderOps();
+}
+
+async function opAbrir(tipo){
+  if(S.sim){
+    pushAlert("Simulador ativo — registro de operações desabilitado (dados seriam falsos)", "dive");
+    return;
+  }
+  try{
+    const r = await fetch(API + "/operacoes", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({tipo, motivo: $("opMotivo").value,
+                            nota: ($("opNota") ? $("opNota").value : "")})
+    });
+    const d = await r.json();
+    if(!r.ok){ pushAlert("⚠ " + (d.erro || "falha ao registrar"), "dive"); return; }
+    pushAlert(`📝 ${tipo.toUpperCase()} registrada @ ${fmt(d.preco_entrada)} (${d.motivo})`,
+              tipo === "compra" ? "res" : "sup");
+  }catch(e){ pushAlert("⚠ servidor fora do ar — operação NÃO registrada", "dive"); }
+  loadOps();
+}
+
+async function opFechar(){
+  if(S.sim) return;
+  try{
+    const r = await fetch(API + "/operacoes/fechar", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({nota: ($("opNota") ? $("opNota").value : "")})
+    });
+    const d = await r.json();
+    if(!r.ok){ pushAlert("⚠ " + (d.erro || "falha ao fechar"), "dive"); return; }
+    const pts = d.resultado_pts;
+    pushAlert(`📝 Fechou ${d.tipo} ${fmt(d.preco_entrada)} → ${fmt(d.preco_saida)} = ` +
+              `${pts >= 0 ? "+" : ""}${fmt(pts)} pts`, pts >= 0 ? "res" : "sup");
+  }catch(e){ pushAlert("⚠ servidor fora do ar — saída NÃO registrada", "dive"); }
+  loadOps();
+}
+
+function renderOps(){
+  const box = $("opControls");
+  if(OPS.aberta){
+    const o = OPS.aberta;
+    box.innerHTML = `
+      <div class="op-open ${o.tipo}">
+        <span>${o.tipo === "compra" ? "▲ COMPRA" : "▼ VENDA"} @ ${fmt(o.preco_entrada)}
+          <span class="flat">· ${o.ts.slice(0,5)} · ${o.motivo}</span></span>
+        <span class="pnl" id="opPnl">—</span>
+        <button class="btn" id="btnOpSair">✖ SAÍ</button>
+      </div>
+      <input class="op-nota" id="opNota" maxlength="500"
+             placeholder="por que vai sair? alvo/stop/sentimento (opcional)">`;
+    $("btnOpSair").onclick = opFechar;
+    updateOpPnl();
+  }else{
+    box.innerHTML = `
+      <div class="op-controls">
+        <select id="opMotivo" title="Motivo da entrada (enriquece o dataset)">
+          <option value="rompimento">rompimento</option>
+          <option value="pullback">pullback</option>
+          <option value="fluxo">fluxo</option>
+          <option value="reversão">reversão</option>
+          <option value="vwap">vwap</option>
+          <option value="outro">outro</option>
+        </select>
+        <button class="btn buy" id="btnOpCompra">▲ COMPREI</button>
+        <button class="btn sell" id="btnOpVenda">▼ VENDI</button>
+      </div>
+      <input class="op-nota" id="opNota" maxlength="500"
+             placeholder="por que está entrando? (opcional, vale ouro)">`;
+    $("btnOpCompra").onclick = () => opAbrir("compra");
+    $("btnOpVenda").onclick  = () => opAbrir("venda");
+  }
+  const fechadas = OPS.operacoes.filter(o => o.resultado_pts != null);
+  $("opList").innerHTML = fechadas.length
+    ? fechadas.map(o => {
+        const pts = o.resultado_pts;
+        const cls = pts > 0 ? "up" : pts < 0 ? "down" : "flat";
+        const notas = [o.nota_entrada && `entrada: ${o.nota_entrada}`,
+                       o.nota_saida   && `saída: ${o.nota_saida}`]
+                      .filter(Boolean).join("\n");
+        const notaAttr = notas
+          ? ` class="op-item tem-nota" title="${notas.replace(/"/g,"&quot;")}"`
+          : ` class="op-item"`;
+        return `<div${notaAttr}>
+          <span class="flat">${o.ts.slice(0,5)}</span>
+          <span class="${o.tipo === "compra" ? "up" : "down"}">${o.tipo === "compra" ? "▲" : "▼"} ${fmt(o.preco_entrada)}→${fmt(o.preco_saida)}</span>
+          <span class="flat">${o.motivo}${notas ? " 🗒" : ""}</span>
+          <span class="res ${cls}">${pts >= 0 ? "+" : ""}${fmt(pts)}</span>
+        </div>`;
+      }).join("")
+    : `<div class="op-vazio">Nenhuma operação registrada hoje. Registre TODAS as entradas — as erradas ensinam tanto quanto as certas.</div>`;
+}
+
+function updateOpPnl(){
+  /* P&L ao vivo da operacao aberta (informativo; o oficial e o do server) */
+  const el = $("opPnl");
+  if(!el || !OPS.aberta || S.ultimo == null) return;
+  const sinal = OPS.aberta.tipo === "compra" ? 1 : -1;
+  const pts = (S.ultimo - OPS.aberta.preco_entrada) * sinal;
+  el.textContent = `${pts >= 0 ? "+" : ""}${fmt(pts)} pts`;
+  el.className = "pnl " + (pts > 0 ? "up" : pts < 0 ? "down" : "flat");
+}
+
 /* ============ WEBSOCKET ============ */
 function setConn(state, txt){
   $("connDot").className = "dot " + (state==="on"?"on":state==="sim"?"sim":"");
@@ -651,7 +592,5 @@ loadNiveis();
 loadBlueChipsInicial();
 loadMacroInicial();
 loadPlanoAtivInicial();
+loadOps();
 connectWS();
-</script>
-</body>
-</html>

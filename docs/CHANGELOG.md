@@ -3,6 +3,43 @@
 Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
 
+## 2026-07-18
+
+### Registro de operações do trader (fase 1 do aprendizado por imitação)
+- Objetivo de longo prazo: dataset de "situação de mercado + decisão do
+  trader + resultado" para descobrir os padrões por trás das decisões
+  (primeiro estatística, depois talvez ML). Fase 1 = coleta.
+- `server_win.py`: tabela `operacoes` no SQLite (entrada, saída,
+  resultado em pts, `contexto` JSON com a FOTO do mercado no instante da
+  entrada: tick + níveis + macro + blue chips + fluxo EMA + plano).
+  Rotas: `POST /operacoes` (abre; preço/contexto capturados no servidor,
+  uma operação por vez), `POST /operacoes/fechar` (fecha e calcula
+  resultado — perdas gravadas igual: sem elas o dataset vira viés de
+  sobrevivência), `GET /operacoes` (dia + aberta), `GET /operacoes/stats`
+  (taxa de acerto, média e total por tipo+motivo). Evento WS
+  `operacoes_atualizadas` sincroniza os dashboards.
+- `frontend/`: card "REGISTRO DO TRADER" — select de motivo (rompimento,
+  pullback, fluxo, reversão, vwap, outro) + botões ▲ COMPREI / ▼ VENDI;
+  com operação aberta mostra painel com P&L ao vivo e ✖ SAÍ; lista das
+  operações do dia com resultado. Registro bloqueado no modo simulador
+  (dados sintéticos poluiriam o dataset).
+- Nota livre opcional (`nota_entrada`/`nota_saida`, até 500 chars): o
+  trader escreve o raciocínio da entrada e da saída com as próprias
+  palavras; o campo troca de contexto conforme o estado (entrando/
+  saindo) e as notas aparecem como 🗒 com tooltip na lista do dia.
+  Insumo para análise por IA dos padrões de raciocínio × resultado.
+
+### Reorganização de pastas + dashboard separado em HTML/CSS/JS
+- Estrutura nova: `frontend/` (dashboard_win.html + style.css + app.js),
+  `excel/` (módulos .bas), `docs/` (este changelog). `server_win.py` e os
+  arquivos de runtime (CSVs, niveis.json, .db) seguem na RAIZ — é onde o
+  VBA grava (caminho fixo nos .bas) e onde o server lê; não mover.
+- `server_win.py`: `FRONTEND_DIR`, rotas `/style.css` e `/app.js`;
+  HTML referencia por caminho relativo (modo `file://` preservado).
+- `requirements.txt`: `uvicorn` → `uvicorn[standard]` — o uvicorn puro
+  não tem lib de WebSocket; em máquina nova o `/ws` falhava silencioso
+  ("Unsupported upgrade request") e o dashboard ficava em "reconectando".
+
 ## 2026-07-17
 
 ### Card MACRO — Brent, Dólar e Juros DI (impacto no IBOV)

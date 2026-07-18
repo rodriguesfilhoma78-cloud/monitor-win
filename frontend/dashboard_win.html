@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Monitor WIN — Tempo Real</title>
+<!-- Caminhos relativos: funcionam servidos pelo server (/) e também
+     abrindo o arquivo direto (file://) com o server fora do ar. -->
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>WIN<span> MONITOR</span></h1>
+  <span id="contrato">carregando níveis…</span>
+  <div class="status">
+    <span><span id="connDot" class="dot"></span><span id="connTxt">desconectado</span></span>
+    <span id="lastUpdate">--:--:--</span>
+    <button class="btn" id="btnSim">▶ Simulador</button>
+    <button class="btn" id="btnSound">🔔 Som: ON</button>
+  </div>
+</header>
+
+<main>
+  <div class="ladder-wrap">
+    <div class="ladder-title">RÉGUA DO PREGÃO</div>
+    <div class="ladder" id="ladder"><div class="rail"></div></div>
+  </div>
+
+  <div class="center">
+    <div class="card" id="priceCard">
+      <div class="bigprice">
+        <span class="px" id="px">—</span>
+        <span class="var flat" id="pxVar">+0 pts (0,00%)</span>
+      </div>
+      <div class="bias neutral" id="bias">⏳ Aguardando dados…</div>
+    </div>
+
+    <div class="card">
+      <h3>ÚLTIMOS TICKS</h3>
+      <canvas id="spark" width="800" height="180"></canvas>
+    </div>
+
+    <div class="grid2">
+      <div class="stat"><div class="k">ABERTURA</div><div class="v" id="stAbert">—</div></div>
+      <div class="stat"><div class="k">MÁXIMA</div><div class="v up" id="stMax">—</div></div>
+      <div class="stat"><div class="k">MÍNIMA</div><div class="v down" id="stMin">—</div></div>
+      <div class="stat"><div class="k">VOLUME</div><div class="v" id="stVol">—</div></div>
+      <div class="stat"><div class="k">AGR. COMPRA</div><div class="v up" id="stAgrC">—</div></div>
+      <div class="stat"><div class="k">AGR. VENDA</div><div class="v down" id="stAgrV">—</div></div>
+      <div class="stat"><div class="k">DELTA</div><div class="v" id="stDelta">—</div></div>
+      <div class="stat"><div class="k">VWAP</div><div class="v" id="stVwap">—</div></div>
+    </div>
+
+    <div class="row2">
+      <div class="card">
+        <h3>ALERTAS</h3>
+        <div class="alerts" id="alerts"><div class="alert-item"><time>—</time>Nenhum alerta ainda.</div></div>
+      </div>
+      <div class="card">
+        <h3>BLUE CHIPS — FLUXO IBOVESPA</h3>
+        <table class="bctbl">
+          <thead><tr style="color:var(--dim)">
+            <th style="text-align:left">Ativo</th>
+            <th style="text-align:right">Último</th>
+            <th style="text-align:right">Var%</th>
+            <th style="text-align:right">Peso</th>
+            <th style="text-align:right">Fluxo</th>
+          </tr></thead>
+          <tbody id="bcBody"><tr><td colspan="5" class="flat" style="padding:6px 0">Aguardando…</td></tr></tbody>
+        </table>
+        <div class="dist" style="margin-top:8px;border-bottom:none" id="bcBias">
+          <span class="flat">Aguardando dados…</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="right">
+    <div class="card">
+      <h3>MACRO — IMPACTO NO IBOV</h3>
+      <div id="macroBanner"></div>
+      <div id="macroRows"><div class="dist"><span class="flat">Aguardando dados…</span></div></div>
+    </div>
+    <div class="card">
+      <h3>DISTÂNCIA AOS NÍVEIS</h3>
+      <div id="distList"><div class="dist"><span class="flat">—</span></div></div>
+    </div>
+    <div class="card">
+      <h3>PLANO DO DIA</h3>
+      <div id="plano"></div>
+    </div>
+    <div class="card">
+      <h3>REGISTRO DO TRADER</h3>
+      <div id="opControls">
+        <div class="op-controls">
+          <select id="opMotivo" title="Motivo da entrada (enriquece o dataset)">
+            <option value="rompimento">rompimento</option>
+            <option value="pullback">pullback</option>
+            <option value="fluxo">fluxo</option>
+            <option value="reversão">reversão</option>
+            <option value="vwap">vwap</option>
+            <option value="outro">outro</option>
+          </select>
+          <button class="btn buy" id="btnOpCompra">▲ COMPREI</button>
+          <button class="btn sell" id="btnOpVenda">▼ VENDI</button>
+        </div>
+        <input class="op-nota" id="opNota" maxlength="500"
+               placeholder="por que está entrando? (opcional, vale ouro)">
+      </div>
+      <div id="opList"></div>
+    </div>
+  </div>
+</main>
+<footer>Profit Pro RTD → Excel/VBA → CSV → FastAPI (porta 8001) → WebSocket · Ferramenta de estudo — não é recomendação de investimento.</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
