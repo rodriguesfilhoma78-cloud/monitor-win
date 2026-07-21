@@ -91,6 +91,29 @@
   @keyframes flash{0%,100%{box-shadow:none}50%{box-shadow:0 0 24px rgba(240,180,41,.8)}}
   @media(prefers-reduced-motion:reduce){.price-marker{transition:none}.flash{animation:none}}
   footer{text-align:center;color:var(--dim);font-size:11px;padding:14px;font-family:var(--mono)}
+  /* --- REGISTRO DO TRADER --- */
+  .op-controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+  .op-controls select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);font-family:var(--mono);font-size:12px;padding:7px 8px;border-radius:6px;flex:1;min-width:96px}
+  .btn.buy{border-color:rgba(43,213,118,.5);color:var(--green)}
+  .btn.buy:hover{background:rgba(43,213,118,.14);color:#fff}
+  .btn.sell{border-color:rgba(255,77,94,.5);color:var(--red)}
+  .btn.sell:hover{background:rgba(255,77,94,.14);color:#fff}
+  .op-nota{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);font-family:var(--sans);font-size:12px;padding:8px 10px;border-radius:6px}
+  .op-nota:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+  #opList{margin-top:10px;font-family:var(--mono);font-size:12px;max-height:220px;overflow-y:auto}
+  .op-item{display:flex;flex-direction:column;gap:2px;padding:8px 9px;border-radius:6px;margin-bottom:6px;background:var(--panel2);border-left:3px solid var(--blue)}
+  .op-item.compra{border-left-color:var(--green)}
+  .op-item.venda{border-left-color:var(--red)}
+  .op-item .op-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+  .op-item .op-head time{color:var(--dim)}
+  .op-item .op-motivo{color:var(--amber);font-size:11px}
+  .op-item .op-nota-txt{color:var(--txt);font-size:11px;opacity:.85}
+  .op-item .op-del{background:none;border:none;color:var(--dim);cursor:pointer;font-size:12px;padding:0 2px}
+  .op-item .op-del:hover{color:var(--red)}
+  .op-empty{color:var(--dim);padding:4px 0}
+  .op-foot{margin-top:6px;font-family:var(--mono);font-size:11px}
+  .op-export{color:var(--blue);text-decoration:none}
+  .op-export:hover{text-decoration:underline}
 </style>
 </head>
 <body>
@@ -173,6 +196,36 @@
     <div class="card">
       <h3>PLANO DO DIA</h3>
       <div id="plano"></div>
+    </div>
+    <div class="card">
+      <h3>LEITURA DO FLUXO (IA)</h3>
+      <div class="op-controls">
+        <button class="btn" id="btnLeitura">🤖 Gerar leitura</button>
+        <span id="leituraInfo" style="font-family:var(--mono);font-size:11px;color:var(--dim)"></span>
+      </div>
+      <div id="leituraBox" style="font-family:var(--sans);font-size:12.5px;line-height:1.5">
+        <span class="flat" style="font-family:var(--mono)">Leitura e alerta com evidências — nunca recomendação de entrada. Clique para gerar.</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>REGISTRO DO TRADER</h3>
+      <div id="opControls">
+        <div class="op-controls">
+          <select id="opMotivo" title="Motivo da entrada (enriquece o dataset)">
+            <option value="rompimento">rompimento</option>
+            <option value="pullback">pullback</option>
+            <option value="fluxo">fluxo</option>
+            <option value="reversão">reversão</option>
+            <option value="vwap">vwap</option>
+            <option value="outro">outro</option>
+          </select>
+          <button class="btn buy" id="btnOpCompra">▲ COMPREI</button>
+          <button class="btn sell" id="btnOpVenda">▼ VENDI</button>
+        </div>
+        <input class="op-nota" id="opNota" maxlength="500"
+               placeholder="por que está entrando? (opcional, vale ouro)">
+      </div>
+      <div id="opList"></div>
     </div>
   </div>
 </main>
@@ -545,6 +598,11 @@ function onTick(data){
     beep(300);                                      // beep grave de aviso
     return;
   }
+  if(data.evento === "leitura_auto"){
+    renderLeitura(data);
+    pushAlert("🤖 Leitura automática atualizada (confluência)", "conf");
+    return;
+  }
   const prev = S.ultimo;
   const g = k => (data[k]!==undefined && data[k]!==null) ? Number(data[k]) : null;
   S.ultimo   = g("ultimo")     ?? S.ultimo;
@@ -641,16 +699,133 @@ function toggleSim(){
   }, 900);
 }
 
+/* ============ LEITURA DO FLUXO (IA) ============ */
+function renderLeitura(d){
+  const cls = d.vies==="compra" ? "up" : d.vies==="venda" ? "down" : "flat";
+  const viesTxt = {compra:"▲ VIÉS COMPRA", venda:"▼ VIÉS VENDA",
+                   misto:"◆ MISTO", indefinido:"○ INDEFINIDO"}[d.vies] || d.vies;
+  const li = arr => (arr||[]).map(x => `<li>${x}</li>`).join("");
+  $("leituraBox").innerHTML = `
+    <div class="${cls}" style="font-family:var(--mono);font-weight:700;margin-bottom:4px">${viesTxt}</div>
+    <div style="margin-bottom:8px">${d.resumo||""}</div>
+    ${d.evidencias&&d.evidencias.length ? `<div class="amber" style="font-family:var(--mono);font-size:11px;margin-bottom:2px">EVIDÊNCIAS</div><ul style="margin:0 0 8px 16px">${li(d.evidencias)}</ul>` : ""}
+    ${d.alertas&&d.alertas.length ? `<div style="font-family:var(--mono);font-size:11px;color:var(--red);margin-bottom:2px">ALERTAS</div><ul style="margin:0 0 8px 16px">${li(d.alertas)}</ul>` : ""}
+    ${d.ressalvas&&d.ressalvas.length ? `<div style="font-family:var(--mono);font-size:11px;color:var(--dim);margin-bottom:2px">RESSALVAS</div><ul style="margin:0 0 0 16px;color:var(--dim)">${li(d.ressalvas)}</ul>` : ""}`;
+  $("leituraInfo").textContent = `gerado ${d.gerado_em||"—"}${d.cache?" (cache)":""}${d.gatilho?" · automática (confluência "+fmt(d.gatilho.nivel)+")":""}`;
+}
+async function gerarLeitura(forcar){
+  const btn = $("btnLeitura");
+  btn.disabled = true; btn.textContent = "🤖 Gerando…";
+  try{
+    const r = await fetch(API + "/leitura" + (forcar ? "?forcar=true" : ""));
+    const d = await r.json();
+    if(!r.ok){
+      $("leituraBox").innerHTML = `<span class="down">⚠ ${d.erro || "erro ao gerar leitura"}</span>`;
+      $("leituraInfo").textContent = "";
+    }else{
+      renderLeitura(d);
+    }
+  }catch(e){
+    $("leituraBox").innerHTML = `<span class="down">⚠ Servidor indisponível para gerar leitura.</span>`;
+  }
+  btn.disabled = false; btn.textContent = "🤖 Gerar leitura";
+}
+$("btnLeitura").onclick = () => gerarLeitura(true);
+
+/* ============ REGISTRO DO TRADER (histórico p/ estudo) ============ */
+/* Grava via API no servidor (tabela operacoes na win_history.db) — sobrevive
+   a F5/reinício e alimenta o dataset de estudo. Se a API cair (dashboard
+   aberto em file://), usa localStorage só para não perder na hora. Cada
+   operação leva o contexto de mercado do instante. */
+const OP_KEY = "monitor_win_ops";
+let OP_ONLINE = false;
+function loadOpsLocal(){
+  try{ return JSON.parse(localStorage.getItem(OP_KEY)) || []; }catch(e){ return []; }
+}
+function saveOpsLocal(ops){
+  try{ localStorage.setItem(OP_KEY, JSON.stringify(ops)); }catch(e){}
+}
+async function fetchOps(){
+  try{
+    const r = await fetch(API + "/operacoes");
+    if(!r.ok) throw 0;
+    const d = await r.json();
+    OP_ONLINE = true;
+    return d.operacoes || [];
+  }catch(e){ OP_ONLINE = false; return loadOpsLocal(); }
+}
+async function renderOps(){
+  const box = $("opList"); if(!box) return;
+  const ops = await fetchOps();
+  const foot = OP_ONLINE
+    ? `<div class="op-foot"><a class="op-export" href="${API}/operacoes.csv">⬇ exportar histórico (CSV)</a></div>`
+    : `<div class="op-foot amber">⚠ offline — gravando local (sem servidor)</div>`;
+  if(!ops.length){
+    box.innerHTML = `<div class="op-empty">Nenhuma operação registrada ainda.</div>${foot}`;
+    return;
+  }
+  box.innerHTML = ops.map(o => {
+    const dir = o.lado === "compra" ? "▲ COMPRA" : "▼ VENDA";
+    const nota = o.nota ? `<span class="op-nota-txt">“${o.nota}”</span>` : "";
+    const dTxt = (o.delta!=null) ? ` · Δ ${o.delta>=0?"+":""}${fmt(o.delta)}` : "";
+    return `<div class="op-item ${o.lado}">
+      <div class="op-head">
+        <span class="${o.lado==="compra"?"up":"down"}"><b>${dir}</b> @ ${fmt(o.preco)}</span>
+        <span><time>${o.hora||""}</time> <button class="op-del" data-id="${o.id}" title="Remover">✕</button></span>
+      </div>
+      <span class="op-motivo">${o.motivo||""}${dTxt}</span>${nota}
+    </div>`;
+  }).join("") + foot;
+  box.querySelectorAll(".op-del").forEach(b => b.onclick = () => removerOp(b.dataset.id));
+}
+async function removerOp(id){
+  try{
+    const r = await fetch(API + "/operacao/" + id, {method:"DELETE"});
+    if(!r.ok) throw 0;
+  }catch(e){ saveOpsLocal(loadOpsLocal().filter(o => o.id != id)); }
+  renderOps();
+}
+async function registrarOp(lado){
+  if(S.ultimo == null){
+    pushAlert("⚠ Sem preço — aguarde dados antes de registrar.", "dive"); return;
+  }
+  const op = {
+    lado, preco: S.ultimo,
+    motivo: $("opMotivo").value,
+    nota: ($("opNota").value || "").trim(),
+    hora: new Date().toLocaleTimeString("pt-BR"),
+    data_pregao: (NIV && NIV.data_pregao) || "",
+    abertura: S.abertura, maxima: S.maxima, minima: S.minima,
+    volume: S.volume, vwap: S.vwap,
+    delta: (S.agrC!=null && S.agrV!=null) ? S.agrC - S.agrV : null,
+  };
+  try{
+    const r = await fetch(API + "/operacao", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(op) });
+    if(!r.ok) throw 0;
+  }catch(e){
+    const ops = loadOpsLocal(); ops.unshift({id: Date.now(), ...op}); saveOpsLocal(ops);
+  }
+  $("opNota").value = "";
+  renderOps();
+  pushAlert(`📝 Registrado: ${lado==="compra"?"COMPRA":"VENDA"} @ ${fmt(S.ultimo)}`, lado==="compra"?"res":"sup");
+  beep(lado==="compra"?660:520);
+}
+
 $("btnSim").onclick = toggleSim;
 $("btnSound").onclick = () => {
   S.soundOn = !S.soundOn;
   $("btnSound").textContent = "🔔 Som: " + (S.soundOn?"ON":"OFF");
 };
+$("btnOpCompra").onclick = () => registrarOp("compra");
+$("btnOpVenda").onclick  = () => registrarOp("venda");
 
 loadNiveis();
 loadBlueChipsInicial();
 loadMacroInicial();
 loadPlanoAtivInicial();
+renderOps();
 connectWS();
 </script>
 </body>
