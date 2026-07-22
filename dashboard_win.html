@@ -173,25 +173,6 @@
         <div class="alerts" id="alerts"><div class="alert-item"><time>—</time>Nenhum alerta ainda.</div></div>
       </div>
       <div class="card">
-        <h3>BLUE CHIPS — FLUXO IBOVESPA</h3>
-        <table class="bctbl">
-          <thead><tr style="color:var(--dim)">
-            <th style="text-align:left">Ativo</th>
-            <th style="text-align:right">Último</th>
-            <th style="text-align:right">Var%</th>
-            <th style="text-align:right">Peso</th>
-            <th style="text-align:right">Fluxo</th>
-          </tr></thead>
-          <tbody id="bcBody"><tr><td colspan="5" class="flat" style="padding:6px 0">Aguardando…</td></tr></tbody>
-        </table>
-        <div class="dist" style="margin-top:8px;border-bottom:none" id="bcBias">
-          <span class="flat">Aguardando dados…</span>
-        </div>
-      </div>
-    </div>
-
-    <div class="row2">
-      <div class="card">
         <h3>LEITURA DO FLUXO (IA)</h3>
         <div class="op-controls">
           <button class="btn" id="btnLeitura">🤖 Gerar leitura</button>
@@ -201,6 +182,9 @@
           <span class="flat" style="font-family:var(--mono)">Leitura e alerta com evidências — nunca recomendação de entrada. Clique para gerar.</span>
         </div>
       </div>
+    </div>
+
+    <div class="row2">
       <div class="card">
         <h3>REGISTRO DO TRADER</h3>
         <div id="opControls">
@@ -237,6 +221,22 @@
     <div class="card">
       <h3>PLANO DO DIA</h3>
       <div id="plano"></div>
+    </div>
+    <div class="card">
+      <h3>BLUE CHIPS — FLUXO IBOVESPA</h3>
+      <table class="bctbl">
+        <thead><tr style="color:var(--dim)">
+          <th style="text-align:left">Ativo</th>
+          <th style="text-align:right">Último</th>
+          <th style="text-align:right">Var%</th>
+          <th style="text-align:right">Peso</th>
+          <th style="text-align:right">Fluxo</th>
+        </tr></thead>
+        <tbody id="bcBody"><tr><td colspan="5" class="flat" style="padding:6px 0">Aguardando…</td></tr></tbody>
+      </table>
+      <div class="dist" style="margin-top:8px;border-bottom:none" id="bcBias">
+        <span class="flat">Aguardando dados…</span>
+      </div>
     </div>
   </div>
 </main>
