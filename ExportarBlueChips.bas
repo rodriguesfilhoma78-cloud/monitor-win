@@ -14,7 +14,7 @@ Attribute VB_Name = "ModuloBlueChips"
 ' ============================================================
 Option Explicit
 
-Private Const CAMINHO_CSV As String = "C:\Users\rodri\OneDrive\Apps\monitor_win\dados_blue_chips.csv"
+Private Const CAMINHO_CSV As String = "C:\Users\rodri\OneDrive\Área de Trabalho\Day trade\monitor_win\dados_blue_chips.csv"
 Private Const PLANILHA As String = "DADOS"
 Private Const INTERVALO_SEG As Long = 2
 Private Const LISTA_TICKERS As String = "VALE3,PETR4,ITUB4,BBDC4,BBAS3"

@@ -3,6 +3,160 @@
 Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
 
+## 2026-07-22
+
+### Correção crítica: dashboard "conectado" mas sem atualizar ("Aguardando ticks")
+- **Schema drift da tabela `fluxo` matava o `market_loop`**. Todo tick, o
+  `INSERT` em `salvar_fluxo_sync` referenciava colunas (`amostra_negocios`,
+  `amostra_contratos`, `janela_s`, `negocios_s`, `contratos_s`) que a tabela
+  existente não tinha (`CREATE TABLE IF NOT EXISTS` não altera tabela pronta; a
+  migração dessas colunas ficou faltando, provável perda na reconstrução por
+  bytecode de 21/07). A exceção derrubava a task do loop silenciosamente — só o
+  tick inicial da conexão chegava, `macro` seguia por rodar em loop à parte.
+  Fix: migração `ALTER TABLE fluxo ADD COLUMN` das colunas faltantes.
+- **Blindagem**: corpo do `while` do `market_loop` agora em `try/except` — um
+  erro de persistência/leitura secundária loga e segue, nunca mais congela o
+  stream de ticks.
+
+### Descasamento de pasta VBA↔server (pós-mudança p/ Day trade)
+- O macro do Excel gravava os CSVs em `OneDrive\Apps\monitor_win` (caminho
+  antigo) enquanto o server lia de `Day trade\monitor_win`. Caminhos do
+  `ExportarWIN.bas`/`Modulo1` e `ExportarBlueChips.bas`/`ModuloBlueChips`
+  repontuados p/ `Day trade`. (O WIN foi corrigido na macro viva; blue chips
+  ver abaixo.)
+- **Blue chips Var% zerada**: server lia arquivo velho (Day trade, de ontem)
+  porque o `ModuloBlueChips` vivo seguia gravando em `Apps` (salvar o `Const`
+  não recompila macro em execução via `OnTime`). `BlueChipsReader` agora lê do
+  arquivo de **mtime mais recente** entre Day trade e Apps — funciona já e se
+  auto-corrige no próximo restart limpo do Excel.
+
+### Dashboard
+- `LEITURA DO FLUXO (IA)` e `REGISTRO DO TRADER` movidos da coluna direita para
+  o espaço vazio da coluna central (lado a lado). Direita fica com
+  MACRO / DISTÂNCIA / PLANO.
+
+## 2026-07-21
+
+### Fluxo: livro de ofertas (BOOK0) e fita (T&T0) entram na esteira
+- O inventário da planilha (`inventario_planilha.md`) achou três tópicos RTD
+  já assinados e nunca exportados: `BOOK0` (livro, A22:H39, 18 níveis),
+  `T&T0` (fita, J22:N42, 21 negócios com **milissegundo**) e `VAP0` (volume
+  at price, W22:X70 — ainda não ligado; atenção: nesse os nomes dos campos
+  são invertidos, `VOL` devolve preço e `PRC` devolve volume).
+- `ExportarWIN.bas`: `ExportarFluxo` grava `dados_book.csv` e `dados_tt.csv`
+  a cada ciclo. As âncoras dos blocos são localizadas pela fórmula do índice
+  0 (`AlvoRTD`) e ficam em cache — varrer a planilha a cada 2s seria caro, e
+  se o bloco mudar de lugar a leitura seguinte relocaliza sozinha.
+- `server_win.py`: `FluxoReader` + tabela `fluxo` + `GET /fluxo` + evento WS
+  `fluxo`. Do livro sai a pressão **parada** (melhor bid/ask, spread,
+  profundidade, desequilíbrio); da fita sai a pressão **executada** (lote
+  médio/máximo, ritmo, agressor inferido pelo lado do livro em que o negócio
+  saiu).
+- **A fita é AMOSTRA, não contagem.** Medido hoje: os 21 negócios da janela
+  do RTD cobrem 0,56s de mediana (mínimo 0,09s) contra ciclo de export de 2s.
+  Somar negócio a negócio entre leituras subestimaria o fluxo em ~70%
+  justamente nos momentos rápidos. A saída correta é a **taxa**: com o span
+  da janela (`janela_s`), `negocios_s` e `contratos_s` são estimativas
+  não-enviesadas que não dependem de continuidade entre leituras. Contagem
+  exata do dia continua vindo dos acumulados (`agr_compra`/`agr_venda`).
+- `taxa_confiavel` marca janelas < 0,1s, em que a divisão amplifica ruído
+  (21 negócios em 0,02s viram "875 neg/s" — real para o instante, mas não
+  sustentável). Quem tirar média tem que ponderar por `janela_s`.
+- 25 testes do `FluxoReader` (livro, taxa, rajada de mesmo carimbo, CSV vazio).
+
+### Ponte Acum: o ranking DA PLANILHA passa a ser o do dia inteiro
+- `RankingCorretoras.escrever_csv` espelha o acumulado em `ranking_acum.csv`
+  (escrita atômica via .tmp + replace; números inteiros — `Val()` do VBA não
+  lê vírgula BR). Primeira linha `# dia=...`: o VBA limpa a Acum em vez de
+  colar dado de pregão anterior.
+- VBA `AtualizarAcum` (a cada 15 ciclos ≈ 30s) cola o CSV na aba `Acum` —
+  a fórmula DADOS!R21 prefere a Acum e troca sozinha da janela de ~60s para
+  o acumulado do pregão. Silencioso em qualquer falha; roda manual por
+  Alt+F8. Testado ponta a ponta ao vivo (fórmula virou para o acumulado).
+- Até o próximo boot do server o CSV não é realimentado (o processo no ar é
+  o código antigo) — a ponte fica plenamente ativa amanhã na largada.
+
+### Ranking de corretoras compilado do dia inteiro
+- Usuário criou na planilha: T&T0 ampliado para **500 negócios** (linhas
+  20-521, RTD entrega até o índice 499 ≈ 60s de fita), bloco "Ranking de
+  Corretoras" em `DADOS!R19:U40` (fórmula LET/FILTER/SORT) e aba **`Acum`**
+  (vazia, só cabeçalhos). A fórmula prefere a `Acum`; sem ela, cai no cálculo
+  sobre a janela viva — ou seja, o ranking da planilha mostra só ~60s.
+- **Fix no VBA**: a altura dos blocos só era detectada ao relocalizar a
+  âncora — estender o bloco com a âncora intacta deixava o export travado na
+  altura velha (100 linhas de um bloco de 500). `AlturaOk` agora confere a
+  borda do bloco a cada ciclo (2 células) e redetecta quando muda.
+- `FluxoReader`: dedupe de negócios entre leituras voltou (`_negocios_novos`,
+  assinatura de 6) — agora confiável porque a janela de 500 cobre ~60s contra
+  ciclo de 2s. Campos internos `novos`/`janela_perdida` consumidos pelo loop.
+- **`RankingCorretoras`**: acumula qtd/financeiro por corretora nos dois
+  lados, o pregão inteiro. Tabela `corretoras` (upsert por dia+corretora),
+  reload no boot (restart não zera), reset na virada de pregão.
+  `GET /ranking` + evento WS `ranking` (top 12, a cada 15s).
+- Validação ao vivo (45s): 439 negócios compilados, 0 janelas perdidas.
+  XP +1000 contratos líquidos, BTG −596, Itaú −463 em só 10 negócios (lote
+  médio 46 — padrão institucional).
+- `ciclos_perdidos` expõe quando a fita transbordou sem ser vista: o
+  acumulado é um **piso**, não o total exato da B3.
+- 19 testes novos (dedupe, acumulador, upsert/reload, perda).
+
+### Blocos ampliados na planilha + perfil de volume (VAP0) ligado
+- Blocos estendidos na aba DADOS: **T&T0 de 21 → 100 negócios** (linhas
+  22-121) e **VAP0 de 49 → 299 níveis** (linhas 22-320). BOOK0 segue com 18.
+- Efeito medido na fita: a janela subiu de **0,56s para ~3,4s** de mediana —
+  agora cobre com folga o ciclo de export de 2s, e as taxas ficaram estáveis
+  (`taxa_confiavel=True` em todas as leituras da verificação).
+- `ExportarWIN.bas`: as alturas dos blocos passaram a ser **detectadas**
+  (`AlturaBloco`) em vez de constantes. Acrescentar linhas de RTD na planilha
+  passa a funcionar sozinho, sem mexer no código.
+- `ExportarVAP` grava `dados_vap.csv` (preço;volume).
+- `FluxoReader._vap`: **POC** (preço de maior volume), **área de valor** (70%
+  do volume, expandida a partir do POC pelo vizinho mais forte; em empate
+  expande os dois lados para não deformar perfil simétrico), `vol_acima_pct`,
+  `dist_poc` e `dentro_area`. Colunas novas na tabela `fluxo`.
+- `_vol_abreviado`: o volume do VAP vem **abreviado** (`620`, `3,04k`,
+  `1,2M`), misturando número puro com sufixo. O parser antigo devolveria
+  vazio em tudo acima de mil. Perde-se resolução (~10 contratos no sufixo k),
+  irrelevante para a forma do perfil.
+- 25 testes novos (parser abreviado, POC, área de valor, casos degenerados).
+
+### VWAP, volume e agressão furados desde 09/07 — módulo VBA desatualizado
+- **Causa raiz**: o `ExportarWIN.bas` do disco ganhou a blindagem
+  `ColPorCampo` em 18/07, mas o módulo **nunca foi importado de volta** para
+  o `WDO_Master_RTD.xlsm`. A planilha seguiu rodando a versão com colunas
+  fixas (`24/26/27/28`), e as colunas do RTD tinham mudado em ~09/07. O CSV
+  saía com `volume`=campo 100 (delta), `agr_compra`=campo 86 (Prior Cote),
+  `agr_venda`=campo 103 (delta) e `vwap`=campo 98 (agressão ≈ 950.000).
+- **Correção**: Módulo1 substituído ao vivo via COM (`PararExportWIN` →
+  troca → `IniciarExportWIN`), backup em `Modulo1.backup_20260721_095650.bas`.
+  `ColPorCampo` confirmado resolvendo certo: ULT→4, VOL→10, 98→27, 99→29,
+  67→30. VWAP voltou a ser preço (174.781 dentro do range do dia).
+- **Blindagem** (`vwap_plausivel`): o VWAP só é gravado se cair dentro do
+  range do dia (folga de 1%); fora disso vira `NULL` e loga alerta. Um campo
+  RTD trocado não contamina mais o histórico em silêncio.
+
+### Pivots calculados sobre pregão de cobertura parcial
+- **Causa raiz**: `daily_ohlc` gravava H/L só da janela em que o server
+  esteve no ar. Com `corrigir_fechamento` escrevendo o FEC oficial (do dia
+  inteiro) num H/L parcial, o C caía fora do range — 07/07, 09/07 e 10/07
+  ficaram com OHLC impossível e serviram de base para os pivots seguintes.
+- `daily_ohlc` ganhou `primeiro_ts`, `ultimo_ts` e `valido`; `dia_coberto`
+  exige primeiro tick até 09:15 e último após 17:45. `ohlc_anterior` prefere
+  dias válidos e, se não houver nenhum, cai no mais recente coerente
+  marcando `cobertura parcial` na `fonte` (o dashboard avisa em vez de ficar
+  sem níveis). `corrigir_fechamento` recusa gravar C fora de [L,H] e marca o
+  dia inválido; `refinar_niveis_com_fec` refaz os níveis a partir do último
+  pregão confiável.
+- `_recalcular_cobertura` roda a cada boot e reclassifica todos os dias pelos
+  snapshots — dias gravados por versões antigas se corrigem sozinhos.
+- Limpeza do `win_history.db` (backup `win_history.antes_correcao_*.db`):
+  removidos 07/07, 09/07 e 10/07 (C fora do range) e 17/07 (OHLC duplicado
+  de 18/07, sem snapshots); 2 `vwap` contaminados anulados; 146 snapshots
+  órfãos sem data apagados.
+- **Atenção**: nenhum dos 6 pregões restantes tem cobertura completa — o
+  server só grava enquanto está no ar. Até fechar um pregão inteiro
+  (09:00→18:00), os pivots seguem saindo com aviso de cobertura parcial.
+
 ## 2026-07-17
 
 ### Card MACRO — Brent, Dólar e Juros DI (impacto no IBOV)

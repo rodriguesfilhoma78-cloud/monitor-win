@@ -44,12 +44,16 @@ import agente_win     # leitura de fluxo por IA (Google Gemini) - consumidor, na
 # CONFIGURACAO
 # ----------------------------------------------------------------
 BASE_DIR      = Path(__file__).parent
-CSV_PATH      = BASE_DIR / "dados_win.csv"       # gerado pelo VBA (ExportarWIN)
-BLUE_CHIPS_CSV = BASE_DIR / "dados_blue_chips.csv"  # gerado pelo VBA (ExportarBlueChips)
-BOOK_CSV      = BASE_DIR / "dados_book.csv"      # livro de ofertas (BOOK0)
-TT_CSV        = BASE_DIR / "dados_tt.csv"        # fita / Times & Trades (T&T0)
-VAP_CSV       = BASE_DIR / "dados_vap.csv"       # volume por preco (VAP0)
-RANKING_CSV   = BASE_DIR / "ranking_acum.csv"    # acumulado p/ a aba Acum (VBA le)
+# 2026-07-22: ponte encerrada. O VBA (Modulo1 + ModuloBlueChips) foi repontuado
+# de Apps\monitor_win para Day trade\monitor_win, entao os CSVs de entrada voltam
+# a ser lidos daqui (BASE_DIR), projeto todo numa pasta so.
+DATA_DIR      = BASE_DIR
+CSV_PATH      = DATA_DIR / "dados_win.csv"       # gerado pelo VBA (ExportarWIN)
+BLUE_CHIPS_CSV = DATA_DIR / "dados_blue_chips.csv"  # gerado pelo VBA (ExportarBlueChips)
+BOOK_CSV      = DATA_DIR / "dados_book.csv"      # livro de ofertas (BOOK0)
+TT_CSV        = DATA_DIR / "dados_tt.csv"        # fita / Times & Trades (T&T0)
+VAP_CSV       = DATA_DIR / "dados_vap.csv"       # volume por preco (VAP0)
+RANKING_CSV   = DATA_DIR / "ranking_acum.csv"    # acumulado p/ a aba Acum (VBA le)
 NIVEIS_PATH   = BASE_DIR / "niveis.json"         # niveis do dia (editavel)
 DB_PATH       = BASE_DIR / "win_history.db"
 DASHBOARD     = BASE_DIR / "dashboard_win.html"
@@ -85,7 +89,7 @@ MACRO_POLL    = 30                            # segundos entre consultas
 # independente dele (r~0,18) — carrega o "fluxo p/ emergentes" que o
 # cambio BRL sozinho nao mostra. DXY sobe -> IBOV tende a cair.
 MACRO_SYMBOLS = {"sp500": "ES=F", "dxy": "DX-Y.NYB", "dolar": "USDBRL=X"}
-MACRO_RTD_CSV = BASE_DIR / "dados_macro_rtd.csv"  # VBA (ExportarMacroRTD)
+MACRO_RTD_CSV = DATA_DIR / "dados_macro_rtd.csv"  # VBA (ExportarMacroRTD) - ver PONTE acima
 RTD_MAX_AGE   = 180                           # s sem update = desatualizado
 
 
@@ -540,19 +544,29 @@ class BlueChipsReader:
               "agr_compra", "agr_venda", "vwap", "volume", "timestamp"]
     DOMINANCIA_MIN = 5.0   # % de dominancia abaixo disso = "neutro" (ruido)
 
-    def __init__(self, path: Path):
-        self.path = path
+    def __init__(self, path: Path, alt_paths: tuple = ()):
+        # Le do arquivo MAIS RECENTE entre os candidatos. Blindagem 22/07: o
+        # macro ModuloBlueChips pode estar gravando na pasta antiga (Apps) ou na
+        # nova (Day trade) dependendo de qual loop OnTime esta vivo; seguir o
+        # mais fresco faz o painel funcionar nos dois casos e se auto-corrige
+        # sozinho quando o Excel reiniciar com o caminho certo compilado.
+        self.paths = [p for p in (path, *alt_paths) if p]
         self._last_mtime = 0.0
 
+    def _fresh_path(self) -> Optional[Path]:
+        cand = [(p.stat().st_mtime, p) for p in self.paths if p.exists()]
+        return max(cand, key=lambda t: t[0])[1] if cand else None
+
     def read_if_changed(self) -> Optional[list[dict]]:
-        if not self.path.exists():
+        path = self._fresh_path()
+        if path is None:
             return None
-        mtime = self.path.stat().st_mtime
+        mtime = path.stat().st_mtime
         if mtime == self._last_mtime:
             return None
         self._last_mtime = mtime
         try:
-            with open(self.path, encoding="utf-8-sig", errors="ignore") as f:
+            with open(path, encoding="utf-8-sig", errors="ignore") as f:
                 rows = [r for r in csv.reader(f, delimiter=";") if r]
         except PermissionError:
             return None                      # Excel escrevendo no arquivo
@@ -899,6 +913,16 @@ class SnapshotDB:
             for col in ("poc", "vah", "val", "vap_total", "vol_acima_pct", "dist_poc"):
                 try:
                     con.execute(f"ALTER TABLE fluxo ADD COLUMN {col} REAL")
+                except sqlite3.OperationalError:
+                    pass                     # coluna ja existe
+            # campos de amostra/janela da fita adicionados depois da criacao
+            # original: tabelas antigas (com negocios/contratos/fita_estourou)
+            # nao os tinham -> INSERT falhava e derrubava o market_loop (22/07).
+            for col, tipo in (("amostra_negocios", "INTEGER"),
+                              ("amostra_contratos", "REAL"), ("janela_s", "REAL"),
+                              ("negocios_s", "REAL"), ("contratos_s", "REAL")):
+                try:
+                    con.execute(f"ALTER TABLE fluxo ADD COLUMN {col} {tipo}")
                 except sqlite3.OperationalError:
                     pass                     # coluna ja existe
             # cobertura do pregao (para preferir pivots de dias completos)
@@ -1364,7 +1388,9 @@ class ConfluenceEngine:
 # APP + LIFESPAN
 # ----------------------------------------------------------------
 reader   = CsvReader(CSV_PATH)
-blue_chips_reader = BlueChipsReader(BLUE_CHIPS_CSV)
+blue_chips_reader = BlueChipsReader(
+    BLUE_CHIPS_CSV,
+    alt_paths=(Path(r"C:\Users\rodri\OneDrive\Apps\monitor_win\dados_blue_chips.csv"),))
 levels   = LevelStore(NIVEIS_PATH)
 db       = SnapshotDB(DB_PATH)
 manager  = ConnectionManager()
@@ -1442,86 +1468,96 @@ async def market_loop():
         print(f"[WIN] Niveis do dia recalculados: {novo['fonte']}")
     print(f"[WIN] Loop iniciado. Observando {CSV_PATH.name} a cada {POLL_INTERVAL}s")
     while True:
-        # Virada de dia com o server no ar: recalcula e avisa os dashboards
-        if date.today() != dia_atual:
-            dia_atual = date.today()
-            fec_conferido = False
-            engine.reset_flow()      # acumulados do RTD zeram no novo pregao
-            novo = atualizar_niveis_automaticos()
-            if novo:
-                print(f"[WIN] Niveis do dia recalculados: {novo['fonte']}")
-                await manager.broadcast({"evento": "niveis_atualizados"})
-        tick = reader.read_if_changed()
-        if tick:
-            # Primeiro tick com FEC do dia: confere o C usado nos pivots
-            if not fec_conferido and tick.fec_ant:
-                fec_conferido = True
-                novo = refinar_niveis_com_fec(tick.fec_ant)
+        try:
+            # Virada de dia com o server no ar: recalcula e avisa os dashboards
+            if date.today() != dia_atual:
+                dia_atual = date.today()
+                fec_conferido = False
+                engine.reset_flow()      # acumulados do RTD zeram no novo pregao
+                novo = atualizar_niveis_automaticos()
                 if novo:
-                    print(f"[WIN] Pivots refinados com FEC oficial "
-                          f"({tick.fec_ant:.0f}): {novo['fonte']}")
+                    print(f"[WIN] Niveis do dia recalculados: {novo['fonte']}")
                     await manager.broadcast({"evento": "niveis_atualizados"})
-            last_tick = tick
-            await manager.broadcast(asdict(tick))
-            # Motor de confluencia: mapa (niveis) x fluxo (delta)
-            for ev in engine.check(tick):
-                print(f"[WIN] {ev['msg']}")
-                await manager.broadcast(ev)
-                # persiste o sinal para analise historica
-                await loop.run_in_executor(None, db.save_evento_sync, ev)
-                if ev["evento"] == "confluencia":
-                    # dispara a leitura de IA sozinha (background - nao
-                    # espera a resposta da API para seguir lendo o proximo tick)
-                    asyncio.create_task(gerar_leitura_automatica(ev))
-            now = time.time()
-            if now - last_snapshot >= SNAPSHOT_EVERY:
-                last_snapshot = now
-                # NAO bloqueia o event loop (corrige debito do server_v2)
-                await loop.run_in_executor(None, db.save_sync, tick)
-                # Hora real de ativacao do gatilho do plano (dos snapshots).
-                zona = (levels.load().get("zona_decisiva") or {})
-                ativ = await loop.run_in_executor(
-                    None, db.plano_ativacao_sync, date.today().isoformat(),
-                    zona.get("min"), zona.get("max"))
-                if ativ != last_plano_ativacao:
-                    last_plano_ativacao = ativ
-                    await manager.broadcast({"evento": "plano_ativacao", **ativ})
-        # Fluxo (livro + fita): lido todo ciclo porque a janela da fita e
-        # curta (21 negocios) - pular ciclo significa perder negocio.
-        fl = fluxo_reader.ler(last_tick.ultimo if last_tick else None)
-        if fl:
-            # compila o acumulado por corretora ANTES do broadcast (o campo
-            # 'novos' e consumo interno, nao vai para os dashboards)
-            novos = fl.pop("novos", [])
-            perdida = fl.pop("janela_perdida", False)
-            ranking.processar(novos, perdida)
-            if novos:
-                await loop.run_in_executor(
-                    None, db.salvar_corretoras_sync, ranking.snapshot_db())
-                await loop.run_in_executor(
-                    None, ranking.escrever_csv, RANKING_CSV)
-            last_fluxo = fl
-            await manager.broadcast({"evento": "fluxo", **fl})
-            if fl["amostra_negocios"] or fl.get("bid"):
-                await loop.run_in_executor(None, db.salvar_fluxo_sync, fl)
-            # ranking por WS a cada ~15s (payload maior, nao precisa de 2s)
-            now_rk = time.time()
-            if novos and now_rk - last_ranking_bcast >= 15:
-                last_ranking_bcast = now_rk
-                await manager.broadcast(
-                    {"evento": "ranking", "dia": ranking.dia,
-                     "corretoras": ranking.ranking()[:12],
-                     "ciclos_perdidos": ranking.negocios_perdidos})
-        bc = blue_chips_reader.read_if_changed()
-        if bc:
-            positivas = sum(1 for a in bc if a["fluxo"] == "compra")
-            negativas = sum(1 for a in bc if a["fluxo"] == "venda")
-            vies = ("compra" if positivas > negativas else
-                    "venda" if negativas > positivas else "neutro")
-            payload = {"evento": "blue_chips", "ativos": bc, "vies": vies,
-                       "positivas": positivas, "negativas": negativas}
-            last_blue_chips = payload
-            await manager.broadcast(payload)
+            tick = reader.read_if_changed()
+            if tick:
+                # Primeiro tick com FEC do dia: confere o C usado nos pivots
+                if not fec_conferido and tick.fec_ant:
+                    fec_conferido = True
+                    novo = refinar_niveis_com_fec(tick.fec_ant)
+                    if novo:
+                        print(f"[WIN] Pivots refinados com FEC oficial "
+                              f"({tick.fec_ant:.0f}): {novo['fonte']}")
+                        await manager.broadcast({"evento": "niveis_atualizados"})
+                last_tick = tick
+                await manager.broadcast(asdict(tick))
+                # Motor de confluencia: mapa (niveis) x fluxo (delta)
+                for ev in engine.check(tick):
+                    print(f"[WIN] {ev['msg']}")
+                    await manager.broadcast(ev)
+                    # persiste o sinal para analise historica
+                    await loop.run_in_executor(None, db.save_evento_sync, ev)
+                    if ev["evento"] == "confluencia":
+                        # dispara a leitura de IA sozinha (background - nao
+                        # espera a resposta da API para seguir lendo o proximo tick)
+                        asyncio.create_task(gerar_leitura_automatica(ev))
+                now = time.time()
+                if now - last_snapshot >= SNAPSHOT_EVERY:
+                    last_snapshot = now
+                    # NAO bloqueia o event loop (corrige debito do server_v2)
+                    await loop.run_in_executor(None, db.save_sync, tick)
+                    # Hora real de ativacao do gatilho do plano (dos snapshots).
+                    zona = (levels.load().get("zona_decisiva") or {})
+                    ativ = await loop.run_in_executor(
+                        None, db.plano_ativacao_sync, date.today().isoformat(),
+                        zona.get("min"), zona.get("max"))
+                    if ativ != last_plano_ativacao:
+                        last_plano_ativacao = ativ
+                        await manager.broadcast({"evento": "plano_ativacao", **ativ})
+            # Fluxo (livro + fita): lido todo ciclo porque a janela da fita e
+            # curta (21 negocios) - pular ciclo significa perder negocio.
+            fl = fluxo_reader.ler(last_tick.ultimo if last_tick else None)
+            if fl:
+                # compila o acumulado por corretora ANTES do broadcast (o campo
+                # 'novos' e consumo interno, nao vai para os dashboards)
+                novos = fl.pop("novos", [])
+                perdida = fl.pop("janela_perdida", False)
+                ranking.processar(novos, perdida)
+                if novos:
+                    await loop.run_in_executor(
+                        None, db.salvar_corretoras_sync, ranking.snapshot_db())
+                    await loop.run_in_executor(
+                        None, ranking.escrever_csv, RANKING_CSV)
+                last_fluxo = fl
+                await manager.broadcast({"evento": "fluxo", **fl})
+                if fl.get("amostra_negocios") or fl.get("bid"):
+                    await loop.run_in_executor(None, db.salvar_fluxo_sync, fl)
+                # ranking por WS a cada ~15s (payload maior, nao precisa de 2s)
+                now_rk = time.time()
+                if novos and now_rk - last_ranking_bcast >= 15:
+                    last_ranking_bcast = now_rk
+                    await manager.broadcast(
+                        {"evento": "ranking", "dia": ranking.dia,
+                         "corretoras": ranking.ranking()[:12],
+                         "ciclos_perdidos": ranking.negocios_perdidos})
+            bc = blue_chips_reader.read_if_changed()
+            if bc:
+                positivas = sum(1 for a in bc if a["fluxo"] == "compra")
+                negativas = sum(1 for a in bc if a["fluxo"] == "venda")
+                vies = ("compra" if positivas > negativas else
+                        "venda" if negativas > positivas else "neutro")
+                payload = {"evento": "blue_chips", "ativos": bc, "vies": vies,
+                           "positivas": positivas, "negativas": negativas}
+                last_blue_chips = payload
+                await manager.broadcast(payload)
+        except Exception as e:
+            # Blindagem: um erro num passo secundario (persistencia, leitura de
+            # fluxo, etc.) NUNCA pode derrubar o loop e congelar o dashboard.
+            # Loga e segue para o proximo ciclo. (Bug real 22/07: schema drift
+            # da tabela fluxo matava o loop silenciosamente.)
+            import traceback
+            print(f"[WIN] ERRO no ciclo do market_loop (seguindo): "
+                  f"{type(e).__name__}: {e}")
+            traceback.print_exc()
         await asyncio.sleep(POLL_INTERVAL)
 
 
@@ -1583,6 +1619,21 @@ app.add_middleware(
 @app.get("/")
 async def dashboard():
     return FileResponse(DASHBOARD)
+
+
+@app.get("/manifest.json")
+async def manifest():
+    return FileResponse(BASE_DIR / "manifest.json", media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+async def service_worker():
+    return FileResponse(BASE_DIR / "sw.js", media_type="application/javascript")
+
+
+@app.get("/icon.svg")
+async def icon():
+    return FileResponse(BASE_DIR / "icon.svg", media_type="image/svg+xml")
 
 
 @app.get("/niveis")

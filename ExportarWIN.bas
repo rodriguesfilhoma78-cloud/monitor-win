@@ -22,8 +22,8 @@
 ' ============================================================
 Option Explicit
 
-Private Const PASTA_MONITOR As String = "C:\Users\rodri\OneDrive\Apps\monitor_win"
-Private Const CAMINHO_CSV As String = "C:\Users\rodri\OneDrive\Apps\monitor_win\dados_win.csv"
+Private Const PASTA_MONITOR As String = "C:\Users\rodri\OneDrive\Área de Trabalho\Day trade\monitor_win"
+Private Const CAMINHO_CSV As String = "C:\Users\rodri\OneDrive\Área de Trabalho\Day trade\monitor_win\dados_win.csv"
 Private Const URL_SERVIDOR As String = "http://127.0.0.1:8001/ultimo"
 Private Const PLANILHA As String = "DADOS"
 Private Const ATIVO As String = "WINFUTV"   ' <== procurado na coluna A
@@ -33,7 +33,7 @@ Private Const INTERVALO_SEG As Long = 2
 ' Varre a coluna A da planilha DADOS e exporta TODAS as linhas DI1*
 ' (o server usa a de maior volume = contrato mais liquido) e o DOLFUT.
 ' Colunas: D(4)=ultimo  H(8)=fec_ant  J(10)=volume.
-Private Const CAMINHO_CSV_MACRO As String = "C:\Users\rodri\OneDrive\Apps\monitor_win\dados_macro_rtd.csv"
+Private Const CAMINHO_CSV_MACRO As String = "C:\Users\rodri\OneDrive\Área de Trabalho\Day trade\monitor_win\dados_macro_rtd.csv"
 
 Private proximaExecucao As Date
 Private exportando As Boolean

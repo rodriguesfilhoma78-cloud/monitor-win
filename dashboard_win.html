@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Monitor WIN — Tempo Real</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0b0f14">
 <style>
   :root{
     --bg:#0b0f14; --panel:#121820; --panel2:#0f141b; --line:#1e2833;
@@ -49,6 +52,8 @@
   .bias.sell{background:rgba(255,77,94,.12);color:var(--red);border:1px solid rgba(255,77,94,.4)}
   .bias.neutral{background:rgba(240,180,41,.10);color:var(--amber);border:1px solid rgba(240,180,41,.4)}
   canvas{width:100%;height:180px;display:block}
+  .spark-wrap{position:relative}
+  .spark-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);font-family:var(--mono);font-size:12px;letter-spacing:.5px;pointer-events:none;text-align:center}
   .grid2{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:4px}
   @media(max-width:600px){.grid2{grid-template-columns:repeat(2,1fr)}}
   .stat{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px}
@@ -145,7 +150,10 @@
 
     <div class="card">
       <h3>ÚLTIMOS TICKS</h3>
-      <canvas id="spark" width="800" height="180"></canvas>
+      <div class="spark-wrap">
+        <canvas id="spark" width="800" height="180"></canvas>
+        <div class="spark-empty" id="sparkEmpty">⏳ Aguardando ticks do pregão…</div>
+      </div>
     </div>
 
     <div class="grid2">
@@ -181,6 +189,39 @@
         </div>
       </div>
     </div>
+
+    <div class="row2">
+      <div class="card">
+        <h3>LEITURA DO FLUXO (IA)</h3>
+        <div class="op-controls">
+          <button class="btn" id="btnLeitura">🤖 Gerar leitura</button>
+          <span id="leituraInfo" style="font-family:var(--mono);font-size:11px;color:var(--dim)"></span>
+        </div>
+        <div id="leituraBox" style="font-family:var(--sans);font-size:12.5px;line-height:1.5">
+          <span class="flat" style="font-family:var(--mono)">Leitura e alerta com evidências — nunca recomendação de entrada. Clique para gerar.</span>
+        </div>
+      </div>
+      <div class="card">
+        <h3>REGISTRO DO TRADER</h3>
+        <div id="opControls">
+          <div class="op-controls">
+            <select id="opMotivo" title="Motivo da entrada (enriquece o dataset)">
+              <option value="rompimento">rompimento</option>
+              <option value="pullback">pullback</option>
+              <option value="fluxo">fluxo</option>
+              <option value="reversão">reversão</option>
+              <option value="vwap">vwap</option>
+              <option value="outro">outro</option>
+            </select>
+            <button class="btn buy" id="btnOpCompra">▲ COMPREI</button>
+            <button class="btn sell" id="btnOpVenda">▼ VENDI</button>
+          </div>
+          <input class="op-nota" id="opNota" maxlength="500"
+                 placeholder="por que está entrando? (opcional, vale ouro)">
+        </div>
+        <div id="opList"></div>
+      </div>
+    </div>
   </div>
 
   <div class="right">
@@ -196,36 +237,6 @@
     <div class="card">
       <h3>PLANO DO DIA</h3>
       <div id="plano"></div>
-    </div>
-    <div class="card">
-      <h3>LEITURA DO FLUXO (IA)</h3>
-      <div class="op-controls">
-        <button class="btn" id="btnLeitura">🤖 Gerar leitura</button>
-        <span id="leituraInfo" style="font-family:var(--mono);font-size:11px;color:var(--dim)"></span>
-      </div>
-      <div id="leituraBox" style="font-family:var(--sans);font-size:12.5px;line-height:1.5">
-        <span class="flat" style="font-family:var(--mono)">Leitura e alerta com evidências — nunca recomendação de entrada. Clique para gerar.</span>
-      </div>
-    </div>
-    <div class="card">
-      <h3>REGISTRO DO TRADER</h3>
-      <div id="opControls">
-        <div class="op-controls">
-          <select id="opMotivo" title="Motivo da entrada (enriquece o dataset)">
-            <option value="rompimento">rompimento</option>
-            <option value="pullback">pullback</option>
-            <option value="fluxo">fluxo</option>
-            <option value="reversão">reversão</option>
-            <option value="vwap">vwap</option>
-            <option value="outro">outro</option>
-          </select>
-          <button class="btn buy" id="btnOpCompra">▲ COMPREI</button>
-          <button class="btn sell" id="btnOpVenda">▼ VENDI</button>
-        </div>
-        <input class="op-nota" id="opNota" maxlength="500"
-               placeholder="por que está entrando? (opcional, vale ouro)">
-      </div>
-      <div id="opList"></div>
     </div>
   </div>
 </main>
@@ -447,7 +458,9 @@ function updateDist(){
 function drawSpark(){
   const c = $("spark"), ctx = c.getContext("2d");
   ctx.clearRect(0,0,c.width,c.height);
-  const t = S.ticks; if(t.length < 2) return;
+  const t = S.ticks;
+  $("sparkEmpty").style.display = t.length < 2 ? "flex" : "none";
+  if(t.length < 2) return;
   const min = Math.min(...t), max = Math.max(...t), pad = 12;
   const x = i => pad + i*(c.width-2*pad)/(t.length-1);
   const y = v => max===min ? c.height/2 : pad + (max-v)*(c.height-2*pad)/(max-min);
@@ -827,6 +840,10 @@ loadMacroInicial();
 loadPlanoAtivInicial();
 renderOps();
 connectWS();
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));
+}
 </script>
 </body>
 </html>

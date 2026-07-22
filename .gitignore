@@ -7,3 +7,4 @@ __pycache__/
 dados_*.csv
 *.db
 niveis.json
+ranking_acum.csv

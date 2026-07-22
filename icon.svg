@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#0b0f14"/>
+  <rect x="96" y="280" width="64" height="140" fill="#2bd576"/>
+  <rect x="224" y="180" width="64" height="240" fill="#2bd576"/>
+  <rect x="352" y="120" width="64" height="300" fill="#4da3ff"/>
+  <text x="256" y="470" font-family="Consolas,monospace" font-size="54" font-weight="700" fill="#c8d2dc" text-anchor="middle" letter-spacing="4">WIN</text>
+</svg>
