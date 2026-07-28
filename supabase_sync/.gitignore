@@ -1,0 +1,13 @@
+# estado/log de runtime (mudam a cada execucao)
+sync.log
+sync_state.json
+
+# nunca versionar credenciais nem dados
+config.local
+*.db
+*.db-journal
+*.db-wal
+
+# python
+__pycache__/
+*.pyc
