@@ -512,10 +512,12 @@ function renderMacro(){
   }
   if(M.dxy){
     // DXY (dólar global): sobe → risk-off p/ emergentes → contra o IBOV.
+    // Legenda segue a direção BRUTA do valor (caiu=vermelho, subiu=verde);
+    // a seta (s) e' quem inverte pra indicar o impacto no IBOV.
     const v = M.dxy.var_pct, s = Math.abs(v)<0.1 ? 0 : (v<0?1:-1);
     imp.push(s);
     rows.push(`<div class="macro-row"><span class="nome">🌐 DXY<small>Dólar global · ICE</small></span>
-      <b class="${v>0?"down":v<0?"up":"flat"}">${fmt2(M.dxy.preco)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
+      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.dxy.preco)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
   }
   if(M.dolar){
     const v = M.dolar.var_pct, s = Math.abs(v)<0.05 ? 0 : (v<0?1:-1);
@@ -524,11 +526,13 @@ function renderMacro(){
       <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.dolar.preco,3)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
   }
   if(M.di){
+    // Legenda segue a direção BRUTA da taxa (caiu=vermelho, subiu=verde);
+    // a seta (s) e' quem inverte pra indicar o impacto no IBOV.
     const v = M.di.var_bps, s = v==null||Math.abs(v)<1 ? 0 : (v<0?1:-1);
     imp.push(s);
     const stale = M.di.desatualizado ? " ⏸" : "";
     rows.push(`<div class="macro-row"><span class="nome">📈 Juros DI<small>${M.di.ticker||"DI1"} · Profit RTD${stale}</small></span>
-      <b class="${v>0?"down":v<0?"up":"flat"}">${fmt2(M.di.taxa,3)}% ${v==null?"":(v>=0?"+":"")+fmt2(v,1)+" bps"}</b>${seta(s)}</div>`);
+      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.di.taxa,3)}% ${v==null?"":(v>=0?"+":"")+fmt2(v,1)+" bps"}</b>${seta(s)}</div>`);
   }
   $("macroRows").innerHTML = rows.join("");
   // Selo de alinhamento (estilo monitor PETR4): direção do vento macro
