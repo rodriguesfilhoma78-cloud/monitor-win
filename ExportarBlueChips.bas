@@ -6,15 +6,19 @@ Attribute VB_Name = "ModuloBlueChips"
 '  Nao usa porta propria - o CSV alimenta direto o server_win.py
 '  (porta 8001), que ja esta no ar.
 '  Colunas RTD: D=ultimo E=abertura F=maxima G=minima H=fec_ant
-'    X(24)=agr_compra["98"] Z(26)=agr_venda["99"]
-'    AA(27)=vwap["67"] AB(28)=volume["VOL"]
+'    AA(27)=agr_compra [TR Volume de Agressao - Compra]
+'    AC(29)=agr_venda [TR Volume de Agressao - Venda]
+'    AD(30)=vwap [VWAP]   J(10)=volume [Volume]
+'  (corrigido 30/07: colunas 24/26/27/28 antigas passaram a apontar
+'  para Prior Cote/Saldo Agressao apos a planilha ganhar colunas de
+'  MACD - o fluxo de compra/venda saia sempre "venda" por causa disso)
 '
 '  INICIO AUTOMATICO: adicionar ao Workbook_Open junto com os demais:
 '    Application.OnTime Now + TimeSerial(0, 0, 16), "IniciarExportBlueChips"
 ' ============================================================
 Option Explicit
 
-Private Const CAMINHO_CSV As String = "C:\Users\rodri\OneDrive\Área de Trabalho\Day trade\monitor_win\dados_blue_chips.csv"
+Private Const CAMINHO_CSV As String = "C:\Users\rodri\Desktop\Day trade\monitor_win\dados_blue_chips.csv"
 Private Const PLANILHA As String = "DADOS"
 Private Const INTERVALO_SEG As Long = 2
 Private Const LISTA_TICKERS As String = "VALE3,PETR4,ITUB4,BBDC4,BBAS3"
@@ -75,10 +79,10 @@ Private Function LinhaAtivo(ws As Worksheet, ticker As String, ts As String) As 
         NumBR(ws.Cells(lin, 6).Value) & ";" & _
         NumBR(ws.Cells(lin, 7).Value) & ";" & _
         NumBR(ws.Cells(lin, 8).Value) & ";" & _
-        NumBR(ws.Cells(lin, 24).Value) & ";" & _
-        NumBR(ws.Cells(lin, 26).Value) & ";" & _
         NumBR(ws.Cells(lin, 27).Value) & ";" & _
-        NumBR(ws.Cells(lin, 28).Value) & ";" & ts
+        NumBR(ws.Cells(lin, 29).Value) & ";" & _
+        NumBR(ws.Cells(lin, 30).Value) & ";" & _
+        NumBR(ws.Cells(lin, 10).Value) & ";" & ts
 End Function
 
 Private Function LinhaDoAtivo(ws As Worksheet, ticker As String) As Long

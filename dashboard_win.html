@@ -62,12 +62,18 @@
   .right{display:flex;flex-direction:column;gap:14px}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
   @media(max-width:900px){.row2{grid-template-columns:1fr}}
-  .bctbl{width:100%;font-family:var(--mono);font-size:12px;border-collapse:collapse;table-layout:auto}
-  .bctbl th,.bctbl td{padding:4px 8px}
+  .bctbl{width:100%;font-family:var(--mono);font-size:11px;border-collapse:collapse;table-layout:fixed}
+  .bctbl th,.bctbl td{padding:3px 4px;overflow:hidden}
   .bctbl th:first-child,.bctbl td:first-child{padding-left:0}
   .bctbl th:last-child,.bctbl td:last-child{padding-right:0}
   .bctbl td.num{text-align:right;white-space:nowrap}
   .bctbl th{white-space:nowrap;font-weight:400}
+  .bctbl col.c-ativo{width:19%}
+  .bctbl col.c-num{width:20%}
+  .bctbl col.c-peso{width:15%}
+  .bctbl col.c-fluxo{width:26%}
+  .bctbl td.fluxo-cell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bctbl .fluxo-bar{display:inline-block;height:6px;background:currentColor;opacity:.6;margin-left:3px;vertical-align:middle;border-radius:2px;max-width:100%}
   .card h3{font-size:12px;letter-spacing:1.5px;color:var(--dim);margin-bottom:10px;font-family:var(--mono)}
   .dist{display:flex;justify-content:space-between;font-family:var(--mono);font-size:13px;padding:6px 0;border-bottom:1px dashed var(--line)}
   .dist:last-child{border-bottom:none}
@@ -99,6 +105,9 @@
   /* --- REGISTRO DO TRADER --- */
   .op-controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
   .op-controls select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);font-family:var(--mono);font-size:12px;padding:7px 8px;border-radius:6px;flex:1;min-width:96px}
+  .op-controls input.op-preco{background:var(--panel2);border:1px solid var(--line);color:var(--txt);font-family:var(--mono);font-size:12px;padding:7px 8px;border-radius:6px;width:94px;min-width:78px}
+  .op-controls input.op-preco:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+  .op-controls input.op-preco::placeholder{color:var(--dim)}
   .btn.buy{border-color:rgba(43,213,118,.5);color:var(--green)}
   .btn.buy:hover{background:rgba(43,213,118,.14);color:#fff}
   .btn.sell{border-color:rgba(255,77,94,.5);color:var(--red)}
@@ -167,10 +176,35 @@
       <div class="stat"><div class="k">VWAP</div><div class="v" id="stVwap">—</div></div>
     </div>
 
-    <div class="row2">
-      <div class="card">
-        <h3>ALERTAS</h3>
-        <div class="alerts" id="alerts"><div class="alert-item"><time>—</time>Nenhum alerta ainda.</div></div>
+    <div class="row2" style="align-items:stretch">
+      <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+        <div class="card">
+          <h3>ALERTAS</h3>
+          <div class="alerts" id="alerts"><div class="alert-item"><time>—</time>Nenhum alerta ainda.</div></div>
+        </div>
+        <div class="card" style="flex:1;min-height:0;display:flex;flex-direction:column">
+          <h3>REGISTRO DO TRADER</h3>
+          <div id="opControls">
+            <div class="op-controls">
+              <select id="opMotivo" title="Motivo da entrada (enriquece o dataset)">
+                <option value="rompimento">rompimento</option>
+                <option value="pullback">pullback</option>
+                <option value="fluxo">fluxo</option>
+                <option value="reversão">reversão</option>
+                <option value="vwap">vwap</option>
+                <option value="outro">outro</option>
+              </select>
+              <input class="op-preco" id="opPreco" inputmode="numeric" maxlength="9"
+                     placeholder="preço (auto)"
+                     title="Preço da entrada. Em branco = usa o preço atual do pregão.">
+              <button class="btn buy" id="btnOpCompra">▲ COMPREI</button>
+              <button class="btn sell" id="btnOpVenda">▼ VENDI</button>
+            </div>
+            <input class="op-nota" id="opNota" maxlength="500"
+                   placeholder="por que está entrando? (opcional, vale ouro)">
+          </div>
+          <div id="opList" style="flex:1;min-height:0;overflow-y:auto"></div>
+        </div>
       </div>
       <div class="card">
         <h3>LEITURA DO FLUXO (IA)</h3>
@@ -181,29 +215,6 @@
         <div id="leituraBox" style="font-family:var(--sans);font-size:12.5px;line-height:1.5">
           <span class="flat" style="font-family:var(--mono)">Leitura e alerta com evidências — nunca recomendação de entrada. Clique para gerar.</span>
         </div>
-      </div>
-    </div>
-
-    <div class="row2">
-      <div class="card">
-        <h3>REGISTRO DO TRADER</h3>
-        <div id="opControls">
-          <div class="op-controls">
-            <select id="opMotivo" title="Motivo da entrada (enriquece o dataset)">
-              <option value="rompimento">rompimento</option>
-              <option value="pullback">pullback</option>
-              <option value="fluxo">fluxo</option>
-              <option value="reversão">reversão</option>
-              <option value="vwap">vwap</option>
-              <option value="outro">outro</option>
-            </select>
-            <button class="btn buy" id="btnOpCompra">▲ COMPREI</button>
-            <button class="btn sell" id="btnOpVenda">▼ VENDI</button>
-          </div>
-          <input class="op-nota" id="opNota" maxlength="500"
-                 placeholder="por que está entrando? (opcional, vale ouro)">
-        </div>
-        <div id="opList"></div>
       </div>
     </div>
   </div>
@@ -225,6 +236,9 @@
     <div class="card">
       <h3>BLUE CHIPS — FLUXO IBOVESPA</h3>
       <table class="bctbl">
+        <colgroup>
+          <col class="c-ativo"><col class="c-num"><col class="c-num"><col class="c-peso"><col class="c-fluxo">
+        </colgroup>
         <thead><tr style="color:var(--dim)">
           <th style="text-align:left">Ativo</th>
           <th style="text-align:right">Último</th>
@@ -613,7 +627,10 @@ function onTick(data){
   }
   if(data.evento === "leitura_auto"){
     renderLeitura(data);
-    pushAlert("🤖 Leitura automática atualizada (confluência)", "conf");
+    // Alerta so na confluencia; a periodica (a cada ~3 min) atualiza em silencio
+    // para nao virar spam no feed de alertas.
+    if(data.gatilho && data.gatilho.nivel != null)
+      pushAlert("🤖 Leitura automática atualizada (confluência)", "conf");
     return;
   }
   const prev = S.ultimo;
@@ -642,15 +659,13 @@ function renderBlueChips(data){
     const cls = a.fluxo==="compra"?"up":a.fluxo==="venda"?"down":"flat";
     const varTxt = a.var_pct==null ? "—" :
       `${a.var_pct>=0?"+":""}${a.var_pct.toFixed(2).replace(".",",")}%`;
-    const barW = Math.max(2, Math.min(40, a.dominancia));
+    const barW = Math.max(2, Math.min(18, a.dominancia));
     return `<tr>
       <td><b>${a.ticker}</b></td>
       <td class="num">${a.ultimo!=null ? a.ultimo.toFixed(2).replace(".",",") : "—"}</td>
       <td class="num ${cls}">${varTxt}</td>
       <td class="num" style="color:var(--dim)">${a.peso_ibov!=null ? a.peso_ibov.toFixed(1).replace(".",",")+"%" : "—"}</td>
-      <td class="num ${cls}" style="white-space:nowrap">${a.fluxo}
-        <span style="display:inline-block;width:${barW}px;height:6px;background:currentColor;opacity:.6;margin-left:4px;vertical-align:middle;border-radius:2px"></span>
-      </td>
+      <td class="num fluxo-cell ${cls}">${a.fluxo}<span class="fluxo-bar" style="width:${barW}px"></span></td>
     </tr>`;
   }).join("");
   const total = data.ativos.length;
@@ -724,7 +739,13 @@ function renderLeitura(d){
     ${d.evidencias&&d.evidencias.length ? `<div class="amber" style="font-family:var(--mono);font-size:11px;margin-bottom:2px">EVIDÊNCIAS</div><ul style="margin:0 0 8px 16px">${li(d.evidencias)}</ul>` : ""}
     ${d.alertas&&d.alertas.length ? `<div style="font-family:var(--mono);font-size:11px;color:var(--red);margin-bottom:2px">ALERTAS</div><ul style="margin:0 0 8px 16px">${li(d.alertas)}</ul>` : ""}
     ${d.ressalvas&&d.ressalvas.length ? `<div style="font-family:var(--mono);font-size:11px;color:var(--dim);margin-bottom:2px">RESSALVAS</div><ul style="margin:0 0 0 16px;color:var(--dim)">${li(d.ressalvas)}</ul>` : ""}`;
-  $("leituraInfo").textContent = `gerado ${d.gerado_em||"—"}${d.cache?" (cache)":""}${d.gatilho?" · automática (confluência "+fmt(d.gatilho.nivel)+")":""}`;
+  let origem = "";
+  if(d.gatilho){
+    origem = d.gatilho.nivel != null
+      ? " · automática (confluência "+fmt(d.gatilho.nivel)+")"
+      : " · automática (periódica)";
+  }
+  $("leituraInfo").textContent = `gerado ${d.gerado_em||"—"}${d.cache?" (cache)":""}${origem}`;
 }
 async function gerarLeitura(forcar){
   const btn = $("btnLeitura");
@@ -799,11 +820,16 @@ async function removerOp(id){
   renderOps();
 }
 async function registrarOp(lado){
-  if(S.ultimo == null){
-    pushAlert("⚠ Sem preço — aguarde dados antes de registrar.", "dive"); return;
+  // Preço manual (opcional). WIN é inteiro em pontos; aceita "174500",
+  // "174.500" ou "174,500" — tudo vira 174500. Em branco = preço atual.
+  const precoTxt = ($("opPreco").value || "").replace(/\D/g, "");
+  const precoManual = precoTxt ? parseInt(precoTxt, 10) : null;
+  const preco = precoManual != null ? precoManual : S.ultimo;
+  if(preco == null){
+    pushAlert("⚠ Sem preço — digite o preço ou aguarde dados antes de registrar.", "dive"); return;
   }
   const op = {
-    lado, preco: S.ultimo,
+    lado, preco,
     motivo: $("opMotivo").value,
     nota: ($("opNota").value || "").trim(),
     hora: new Date().toLocaleTimeString("pt-BR"),
@@ -821,8 +847,9 @@ async function registrarOp(lado){
     const ops = loadOpsLocal(); ops.unshift({id: Date.now(), ...op}); saveOpsLocal(ops);
   }
   $("opNota").value = "";
+  $("opPreco").value = "";
   renderOps();
-  pushAlert(`📝 Registrado: ${lado==="compra"?"COMPRA":"VENDA"} @ ${fmt(S.ultimo)}`, lado==="compra"?"res":"sup");
+  pushAlert(`📝 Registrado: ${lado==="compra"?"COMPRA":"VENDA"} @ ${fmt(preco)}`, lado==="compra"?"res":"sup");
   beep(lado==="compra"?660:520);
 }
 

@@ -35,9 +35,9 @@ BATCH = 1000
 # tabelas append-only keyed por id -> (colunas)
 APPEND_ONLY = {
     "fluxo": ["id", "dia", "ts", "bid", "ask", "spread", "qtd_bid", "qtd_ask",
-              "desequilibrio", "profundidade_bid", "profundidade_ask", "negocios",
-              "contratos", "lote_medio", "lote_max", "agr_compra_fita",
-              "agr_venda_fita", "pressao_fita", "fita_estourou", "poc", "vah",
+              "desequilibrio", "profundidade_bid", "profundidade_ask",
+              "lote_medio", "lote_max", "agr_compra_fita",
+              "agr_venda_fita", "pressao_fita", "poc", "vah",
               "val", "vap_total", "vol_acima_pct", "dist_poc", "amostra_negocios",
               "amostra_contratos", "janela_s", "negocios_s", "contratos_s"],
     "snapshots": ["id", "ts", "ultimo", "abertura", "maxima", "minima", "volume",

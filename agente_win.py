@@ -36,7 +36,7 @@ GEMINI_URL   = "https://generativelanguage.googleapis.com/v1beta/interactions"
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 TIMEOUT_S    = 30.0
 CACHE_TTL_S  = 45.0       # nao gera leitura nova a cada clique repetido do botao
-MAX_OUTPUT_TOKENS = 900
+MAX_OUTPUT_TOKENS = 320    # leitura compacta: 1 frase + no maximo 2 evidencias
 
 SYSTEM_PROMPT = """Voce e um leitor de fluxo para um day trader de WIN (mini-indice B3, Profit Pro).
 
@@ -68,10 +68,33 @@ Regras de leitura especificas deste sistema (nao invente numeros fora delas):
   total.
 - eventos_recentes (confluencia/divergencia) ja sao sinais do motor local;
   cite-os quando relevantes, nao os recalcule.
+- macro (sp500_var_pct, dxy_var_pct, dolar_var_pct, di_var_bps) e o pano de
+  fundo do dia (risk-on/off global, cambio, juros) - NAO e o WIN, e contexto.
+  macro.alinhamento_com_win ja aplica a MESMA regra do banner do dashboard
+  (S&P500 sobe=favoravel, DXY/dolar/DI sobem=contrario ao Ibov) comparada ao
+  var% do WIN; use "alinhado_compra"/"alinhado_venda" para dizer que o vento
+  macro REFORCA o movimento local, e "divergente" para dizer que o WIN esta
+  andando CONTRA o pano de fundo (mencione isso como alerta, nao ignore).
+  "misto" so significa que os sinais macro estao empatados ou o proprio WIN
+  esta parado - nao va contra a fita por causa disso.
+- blue_chips.vies_agregado (compra/venda/neutro, positivas/negativas de 5)
+  e o fluxo agregado das 5 acoes que mais pesam no Ibovespa (peso_ibov em
+  blue_chips.ativos). Trate como CONFIRMACAO ou CONTRASTE do movimento do
+  indice (ex.: WIN subindo com blue chips majoritariamente "venda" e um
+  alerta de fragilidade), nunca como fonte propria de vies do WIN.
 
 Responda em portugues do Brasil, direto, sem jargao redundante. Toda
 afirmacao de vies ou alerta deve ter pelo menos um numero do contexto entre
-parenteses."""
+parenteses.
+
+FORMATO COMPACTO (obrigatorio - o painel roda leitura automatica a cada poucos
+minutos e precisa de texto curto):
+- resumo: UMA frase, no maximo ~20 palavras, com o numero principal.
+- evidencias: no MAXIMO 2 itens, cada um com um numero, bem curtos.
+- alertas: so quando houver algo real (divergencia, absorcao, cobertura
+  incompleta, ciclos_perdidos alto). Se nao houver, devolva lista vazia.
+- ressalvas: no maximo 1, e so se for material. Se nao, lista vazia.
+Nao repita numeros entre resumo e evidencias. Sem preambulo, sem enrolacao."""
 
 OUTPUT_SCHEMA = {
     "type": "object",
@@ -82,13 +105,15 @@ OUTPUT_SCHEMA = {
         },
         "resumo": {
             "type": "string",
-            "description": "1-2 frases com a leitura principal do momento",
+            "description": "UMA frase curta (~20 palavras) com a leitura "
+                           "principal do momento e o numero que a sustenta",
         },
         "evidencias": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "cada item cita um numero concreto do contexto "
-                           "(livro, fita, ranking, delta) que sustenta a leitura",
+            "description": "no maximo 2 itens curtos, cada um citando um numero "
+                           "concreto do contexto (livro, fita, ranking, delta)",
+            "maxItems": 2,
         },
         "alertas": {
             "type": "array",
@@ -115,9 +140,57 @@ def disponivel() -> bool:
     return bool(os.environ.get("GEMINI_API_KEY"))
 
 
+def _alinhamento_macro(macro: dict, tick) -> Optional[dict]:
+    """Replica a regra do banner 'MACRO - IMPACTO NO IBOV' do dashboard
+    (dashboard_win.html, renderMacro()) para o contexto da IA nao
+    contradizer o que o trader ja ve na tela: S&P500 sobe = favoravel;
+    DXY, dolar e DI sobem = contrario ao Ibov (faixas mortas identicas
+    as do banner para nao virar ruido em sinal)."""
+    sinais = []
+    sp500 = macro.get("sp500") or {}
+    if sp500.get("var_pct") is not None:
+        v = sp500["var_pct"]
+        sinais.append(0 if abs(v) < 0.1 else (1 if v > 0 else -1))
+    dxy = macro.get("dxy") or {}
+    if dxy.get("var_pct") is not None:
+        v = dxy["var_pct"]
+        sinais.append(0 if abs(v) < 0.1 else (1 if v < 0 else -1))
+    dolar = macro.get("dolar") or {}
+    if dolar.get("var_pct") is not None:
+        v = dolar["var_pct"]
+        sinais.append(0 if abs(v) < 0.05 else (1 if v < 0 else -1))
+    di = macro.get("di") or {}
+    if di.get("var_bps") is not None:
+        v = di["var_bps"]
+        sinais.append(0 if abs(v) < 1 else (1 if v < 0 else -1))
+    if not sinais:
+        return None
+    fav = sum(1 for s in sinais if s > 0)
+    con = sum(1 for s in sinais if s < 0)
+    macro_dir = 1 if fav > con else (-1 if con > fav else 0)
+    win_var = None
+    if tick and tick.ultimo:
+        base = tick.fec_ant or tick.abertura
+        if base:
+            win_var = (tick.ultimo / base - 1) * 100
+    win_dir = 0
+    if win_var is not None:
+        win_dir = 1 if win_var > 0.05 else (-1 if win_var < -0.05 else 0)
+    if macro_dir == 0 or win_dir == 0:
+        direcao = "misto"
+    elif macro_dir == win_dir:
+        direcao = "alinhado_compra" if macro_dir > 0 else "alinhado_venda"
+    else:
+        direcao = "divergente"
+    return {"direcao": direcao, "favoraveis": fav, "contrarios": con,
+            "win_var_pct": round(win_var, 2) if win_var is not None else None}
+
+
 def montar_contexto(tick, fluxo: Optional[dict], ranking_dados: dict,
                      niveis: dict, eventos_hoje: list,
-                     ohlc_hoje: Optional[dict]) -> dict:
+                     ohlc_hoje: Optional[dict],
+                     macro: Optional[dict] = None,
+                     blue_chips: Optional[dict] = None) -> dict:
     """Resume o estado atual do monitor num JSON compacto - so o que o
     modelo precisa, para nao gastar tokens/cota a toa."""
     ctx: dict = {"hora": time.strftime("%H:%M:%S")}
@@ -149,6 +222,28 @@ def montar_contexto(tick, fluxo: Optional[dict], ranking_dados: dict,
         ctx["ohlc_hoje"] = {k: ohlc_hoje.get(k) for k in
                             ("abertura", "maxima", "minima", "valido")
                             if k in ohlc_hoje}
+    if macro:
+        ctx["macro"] = {
+            "sp500_var_pct": (macro.get("sp500") or {}).get("var_pct"),
+            "dxy_var_pct": (macro.get("dxy") or {}).get("var_pct"),
+            "dolar_var_pct": (macro.get("dolar") or {}).get("var_pct"),
+            "di_var_bps": (macro.get("di") or {}).get("var_bps"),
+            "di_desatualizado": (macro.get("di") or {}).get("desatualizado"),
+        }
+        alinhamento = _alinhamento_macro(macro, tick)
+        if alinhamento:
+            ctx["macro"]["alinhamento_com_win"] = alinhamento
+    if blue_chips and blue_chips.get("ativos"):
+        ctx["blue_chips"] = {
+            "vies_agregado": blue_chips.get("vies"),
+            "positivas": blue_chips.get("positivas"),
+            "negativas": blue_chips.get("negativas"),
+            "ativos": [
+                {"ticker": a["ticker"], "var_pct": a.get("var_pct"),
+                 "fluxo": a.get("fluxo"), "peso_ibov": a.get("peso_ibov")}
+                for a in blue_chips["ativos"]
+            ],
+        }
     return ctx
 
 

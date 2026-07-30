@@ -3,6 +3,103 @@
 Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
 
+## 2026-07-30
+
+### Pivots presos no OHLC de 23/07
+- `PREGAO_ABERTURA_ATE` relaxado de `"09:15"` para `"09:30"` — dias em que o
+  Excel/Profit abriam um pouco depois desse corte (24, 27, 29/07) ficavam
+  sempre descartados como base de pivots, caindo num pregão mais antigo que
+  o necessário.
+
+### Blue chips com viés de venda falso-positivo (5/5 sempre)
+- `ModuloBlueChips` (VBA) lia `agr_compra`/`agr_venda` de colunas fixas
+  (X24/Z26) que deslocaram quando a planilha ganhou colunas de MACD — a
+  coluna 24 virou "Prior Cote" (preço) e a 26 virou "Saldo Acumulado de
+  Agressão" (saldo, não volume). Corrigido para as colunas reais
+  (27=compra, 29=venda, 30=vwap, 10=volume). `ExportarBlueChips.bas` e
+  `ExportarWIN.bas` em disco resincronizados com o código real do Excel
+  (estavam desatualizados e apontavam pra um caminho OneDrive inexistente).
+
+### Leitura de IA (Gemini) ganha contexto macro + blue chips
+- `agente_win.montar_contexto()` agora recebe `macro` (S&P500/DXY/dólar/DI)
+  e `blue_chips`; calcula `alinhamento_com_win` com a MESMA regra do banner
+  "MACRO — IMPACTO NO IBOV" do dashboard, pra IA não contradizer o que já
+  aparece na tela. `LEITURA_AUTO_INTERVALO` subiu de 180s (3min) pra 900s
+  (15min) — prompt maior, poupa cota do nível gratuito. Confluência continua
+  disparando leitura na hora, sem esperar esse intervalo.
+
+> Descoberta no meio do trabalho: a sessão vinha operando por engano numa
+> cópia órfã duplicada do projeto (`Day trade\Day trade\monitor_win`, CSV
+> congelado). Corrigido — servidor certo confirmado no ar. Nota detalhada:
+> `Sessão 2026-07-30 — Pivots, blue chips e IA com macro`.
+
+## 2026-07-24
+
+### Leitura de IA automática (periódica) + texto compacto
+- **Decisão do usuário**: o agente de IA deve rodar sozinho, com textos curtos
+  e objetivos. A automação já era parcial (disparava em cada `confluencia`);
+  faltava cobrir pregão parado e enxugar o texto.
+- **Gatilho periódico** no `market_loop`: nova constante
+  `LEITURA_AUTO_INTERVALO = 180` (~3 min, topo do `server_win.py`) +
+  `last_leitura_auto`. Dispara `gerar_leitura_automatica({"tipo":"periodica"})`
+  em background — respeita o lock `_leitura_auto_em_andamento` e o cache de 45s,
+  então não empilha chamadas nem estoura cota. ~180 leituras/dia num pregão
+  9h–18h: folga confortável no free tier do Gemini. Confluência segue disparando.
+- **Modo compacto** (`agente_win.py`): `SYSTEM_PROMPT` com bloco "FORMATO
+  COMPACTO" (resumo em 1 frase ~20 palavras, máx. 2 evidências, alertas/ressalvas
+  só quando materiais); `maxItems:2` no schema; `MAX_OUTPUT_TOKENS` 900→320.
+- **Dashboard**: `renderLeitura` distingue origem "confluência" vs "periódica";
+  alerta no feed só na confluência (a periódica atualiza em silêncio, sem virar
+  spam a cada 3 min).
+- Filosofia mantida: leitura+alerta com evidências, nunca recomendação de
+  entrada; nenhuma fonte nova. `py_compile` OK. **Vale no próximo restart do
+  server.** Nota detalhada: `Sessão 2026-07-24 — Leitura de IA automática e compacta`.
+
+## 2026-07-23
+
+### Régua / Plano do dia / Distância aos níveis defasados — base dos pivôs 2 dias atrasada
+- **Sintoma**: dashboard com `Pivots automáticos (OHLC 2026-07-21)` no dia 23/07;
+  preço (178.350) acima de TODOS os níveis (R3 em 177.370 a −980 pts).
+- **Causa raiz**: `ohlc_anterior` preferia o último dia `valido=1`. O pregão de
+  22/07 ficou `valido=0` porque o server parou de capturar às 16:40 (antes de
+  `PREGAO_FECHA_APOS=17:45`), então foi pulado e usou 21/07 — cujo range
+  (173.5k–175.3k) não tinha relação com o mercado atual (22/07 fechou 178.780).
+- **Correção imediata (ao vivo, sem reiniciar)**: 22/07 marcado `valido=1` no
+  `win_history.db` (dados coerentes) + `POST /niveis/recalcular`. Níveis
+  passaram para OHLC 22/07 (Pivot 177.350 · Zona 176.630–178.065 · R1 180.450
+  … S3 170.900), coerentes com o preço.
+
+### `ohlc_anterior` passa a usar o pregão mais recente (último tick salvo)
+- Antes preferia o último dia coberto ponta a ponta (`valido=1`), o que deixava
+  a base velha quando um dia recente não fechava 17:45. Agora usa o pregão
+  **mais recente** cuja abertura foi capturada (`primeiro_ts <= 09:15`) e
+  coerente (C dentro de [L,H]), com o **último tick salvo** como fechamento.
+  Cobertura parcial (`valido=0`) não descarta mais o dia — só marca
+  `cobertura_parcial` (dashboard avisa). Fallback: nenhum dia com abertura
+  capturada → cai no mais recente coerente.
+
+### Níveis auto recalculam ao reabrir o monitor se a base mudou
+- `calcular_niveis_do_dia` grava `base_dia` no `niveis.json`.
+  `atualizar_niveis_automaticos` (chamado no start do `market_loop`) refaz os
+  níveis automáticos quando `base_dia` mudou, mesmo já sendo do dia. Níveis
+  definidos MANUALMENTE hoje continuam preservados.
+
+### FEC oficial acerta e estende dia parcial
+- Ao abrir no dia seguinte, o Excel/RTD traz o FEC (fechamento oficial do
+  pregão anterior, coluna 8 do `dados_win.csv`). `refinar_niveis_com_fec` (1º
+  tick do dia) agora ramifica: dia **completo** → só troca o C (fora do H/L →
+  marca inválido e refaz do próximo); dia **parcial** → adota o FEC como
+  fechamento e **estende H/L** para incluí-lo (`ajustar_ohlc_parcial`) — máxima
+  real ≥ FEC e mínima ≤ FEC, não fabrica dado. Régua, distância e plano saem do
+  mesmo pacote de pivôs → atualizam juntos e vão pro dashboard via WS.
+- **Validação**: FEC de 22/07 = 178.775 vs último tick salvo 178.780 (1 tick) —
+  confirmou a abordagem "último tick salvo".
+
+> Mudanças de código valem no próximo restart do server (o processo no ar é o
+> código antigo, já com os níveis certos via recálculo ao vivo). Recomendação:
+> deixar o server no ar até depois das 17:45 para o dia entrar como cobertura
+> completa e dispensar a correção via FEC.
+
 ## 2026-07-22
 
 ### Correção crítica: dashboard "conectado" mas sem atualizar ("Aguardando ticks")

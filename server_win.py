@@ -58,6 +58,9 @@ NIVEIS_PATH   = BASE_DIR / "niveis.json"         # niveis do dia (editavel)
 DB_PATH       = BASE_DIR / "win_history.db"
 DASHBOARD     = BASE_DIR / "dashboard_win.html"
 POLL_INTERVAL = 1.0        # segundos entre leituras do CSV
+LEITURA_AUTO_INTERVALO = 900   # segundos entre leituras de IA periodicas (15 min) -
+                               # subiu de 3 p/ 15 min ao incluir macro+blue_chips no
+                               # contexto (prompt maior, poupa cota do nivel gratuito)
 SNAPSHOT_EVERY = 2         # segundos entre snapshots no SQLite (resolucao
                            # do perfil de volume; ~12k linhas/dia no WIN)
 HOST, PORT    = "127.0.0.1", 8001
@@ -65,7 +68,7 @@ HOST, PORT    = "127.0.0.1", 8001
 # Cobertura minima para um pregao virar base de pivots: o server tem que ter
 # pego a abertura e o fechamento. Fora disso, H/L sao parciais e os pivots do
 # dia seguinte saem errados.
-PREGAO_ABERTURA_ATE = "09:15"    # primeiro tick tem que vir antes disso
+PREGAO_ABERTURA_ATE = "09:30"    # primeiro tick tem que vir antes disso
 PREGAO_FECHA_APOS   = "17:45"    # ultimo tick tem que vir depois disso
 
 # Peso aproximado de cada blue chip no IBOV (atualizar periodicamente -
@@ -757,6 +760,7 @@ def calcular_niveis_do_dia(base: dict, contrato: str) -> dict:
     r3, s3 = h + 2 * (p - l), l - 2 * (h - p)
     return {
         "data_pregao": date.today().isoformat(),
+        "base_dia": base["dia"],
         "contrato": contrato,
         "fonte": f"Pivots automáticos (OHLC {base['dia']}){aviso}",
         "pivot": _tick5(p),
@@ -1013,25 +1017,33 @@ class SnapshotDB:
     def ohlc_anterior(self, hoje: str) -> Optional[dict]:
         """OHLC do ultimo pregao ANTES de 'hoje' (pula fim de semana).
 
-        Prefere pregoes cobertos de ponta a ponta (valido=1), porque H/L
-        truncados geram pivots errados. Se nao houver nenhum, cai no dia mais
-        recente que ao menos seja coerente (C dentro de [L,H]) e marca
-        'cobertura_parcial' - o dashboard avisa em vez de ficar sem niveis.
+        Regra: pega o pregao mais RECENTE que seja coerente (C dentro de
+        [L,H]) e cuja ABERTURA foi capturada (primeiro_ts <= abertura). O
+        fechamento usado e o ULTIMO tick salvo daquele dia. Assim um dia que
+        o server nao cobriu ate o fim (valido=0) NAO e descartado: pivots
+        recentes valem mais que um dia velho perfeito. Quando a cobertura
+        nao foi ate o fechamento oficial, marca 'cobertura_parcial' e o
+        dashboard avisa. So exige a abertura porque sem ela o H/L fica
+        inutilizavel (ex.: dia que so rodou de tarde).
         """
-        base = ("SELECT * FROM daily_ohlc WHERE dia < ? "
-                "AND maxima IS NOT NULL AND minima IS NOT NULL "
-                "AND fechamento IS NOT NULL "
-                "AND fechamento BETWEEN minima AND maxima ")
+        coerente = ("SELECT * FROM daily_ohlc WHERE dia < ? "
+                    "AND maxima IS NOT NULL AND minima IS NOT NULL "
+                    "AND fechamento IS NOT NULL "
+                    "AND fechamento BETWEEN minima AND maxima ")
         with sqlite3.connect(self.path) as con:
             con.row_factory = sqlite3.Row
             row = con.execute(
-                base + "AND valido = 1 ORDER BY dia DESC LIMIT 1", (hoje,)
+                coerente + "AND primeiro_ts IS NOT NULL AND primeiro_ts <= ? "
+                "ORDER BY dia DESC LIMIT 1", (hoje, PREGAO_ABERTURA_ATE)
             ).fetchone()
-            if row:
-                return dict(row, cobertura_parcial=False)
-            row = con.execute(
-                base + "ORDER BY dia DESC LIMIT 1", (hoje,)).fetchone()
-        return dict(row, cobertura_parcial=True) if row else None
+            if row is None:
+                # Nenhum dia com a abertura capturada: cai no mais recente
+                # apenas coerente (ultimo recurso) em vez de ficar sem niveis.
+                row = con.execute(
+                    coerente + "ORDER BY dia DESC LIMIT 1", (hoje,)).fetchone()
+        if row is None:
+            return None
+        return dict(row, cobertura_parcial=(row["valido"] != 1))
 
     def corrigir_fechamento(self, dia: str, fechamento: float) -> bool:
         """Substitui o fechamento gravado pelo oficial (RTD FEC).
@@ -1056,6 +1068,22 @@ class SnapshotDB:
             con.execute("UPDATE daily_ohlc SET fechamento=? WHERE dia=?",
                         (fechamento, dia))
         return True
+
+    def ajustar_ohlc_parcial(self, dia: str, maxima: float,
+                             minima: float, fechamento: float) -> None:
+        """Grava o FEC oficial num pregao PARCIAL e estende H/L p/ inclui-lo.
+
+        So faz sentido para dias sem cobertura ate o fim (valido=0): o
+        fechamento oficial e um preco que negociou, entao a maxima real foi
+        >= FEC e a minima real <= FEC. Estender o range e correto (nao
+        fabrica dado) e evita descartar o FEC quando o tick capturado antes
+        de o server sair ficou aquem do fechamento real. Mantem valido=0 -
+        o dia continua marcado como cobertura parcial.
+        """
+        with sqlite3.connect(self.path) as con:
+            con.execute(
+                "UPDATE daily_ohlc SET maxima=?, minima=?, fechamento=? "
+                "WHERE dia=?", (maxima, minima, fechamento, dia))
 
     # ---- REGISTRO DO TRADER -------------------------------------------
     def salvar_operacao_sync(self, d: dict) -> int:
@@ -1416,11 +1444,17 @@ def atualizar_niveis_automaticos(force: bool = False) -> Optional[dict]:
     """
     cfg = levels.load()
     hoje = date.today().isoformat()
-    if not force and cfg.get("data_pregao") == hoje:
-        return None
     base = db.ohlc_anterior(hoje)
     if base is None:
         return None
+    if not force and cfg.get("data_pregao") == hoje:
+        # Ja ha niveis de hoje. So refaz se forem AUTOMATICOS e a base de
+        # OHLC tiver mudado - ex.: monitor reaberto depois de o pregao
+        # anterior ter fechado, agora com o ultimo tick salvo daquele dia.
+        # Niveis definidos MANUALMENTE hoje sao preservados.
+        fonte_auto = str(cfg.get("fonte", "")).startswith("Pivots autom")
+        if not (fonte_auto and cfg.get("base_dia") != base["dia"]):
+            return None
     novo = calcular_niveis_do_dia(base, cfg.get("contrato", "WIN"))
     levels.save(novo)
     db.log_niveis_sync(novo, "auto")
@@ -1428,11 +1462,19 @@ def atualizar_niveis_automaticos(force: bool = False) -> Optional[dict]:
 
 
 def refinar_niveis_com_fec(fec: float) -> Optional[dict]:
-    """Troca o fechamento gravado pelo FEC oficial do RTD e recalcula.
+    """Ao abrir no dia seguinte, o Excel/RTD ja traz o FEC (fechamento
+    oficial do pregao anterior). Usa esse valor para acertar a base dos
+    pivots e reemitir regua, distancia aos niveis e plano do dia:
 
-    So age se os niveis de hoje forem automaticos e o C usado divergir
-    do oficial em 1 tick ou mais (protege contra server desligado antes
-    do fechamento no dia anterior).
+    - Dia anterior COMPLETO (cobertura ate 17:45): so troca o C se divergir
+      >= 1 tick. Se o FEC cair fora do H/L gravado, o problema e o H/L ->
+      marca invalido e refaz do ultimo pregao confiavel.
+    - Dia anterior PARCIAL (NAO foi ate 17:45): o H/L pode estar truncado
+      no ponto em que o server saiu. Adota o FEC como fechamento e ESTENDE
+      o range para inclui-lo, para os niveis refletirem o fechamento oficial
+      em vez do ultimo tick capturado antes do encerramento.
+
+    So age sobre niveis automaticos; niveis manuais de hoje sao preservados.
     """
     cfg = levels.load()
     hoje = date.today().isoformat()
@@ -1443,11 +1485,20 @@ def refinar_niveis_com_fec(fec: float) -> Optional[dict]:
     base = db.ohlc_anterior(hoje)
     if base is None or abs(base["fechamento"] - fec) < 5:
         return None                          # ja esta correto (< 1 tick)
-    if not db.corrigir_fechamento(base["dia"], fec):
-        # Cobertura parcial: aquele dia acabou de ser marcado invalido.
-        # Refaz os niveis a partir do ultimo pregao realmente confiavel.
+
+    if base.get("cobertura_parcial"):
+        # Pregao que nao fechou 17:45: confia no FEC e estende H/L se preciso.
+        novo_h = max(base["maxima"], fec)
+        novo_l = min(base["minima"], fec)
+        db.ajustar_ohlc_parcial(base["dia"], novo_h, novo_l, fec)
+        base = dict(base, maxima=novo_h, minima=novo_l, fechamento=fec)
+    elif not db.corrigir_fechamento(base["dia"], fec):
+        # Dia dito completo mas FEC fora do H/L: H/L nao era confiavel.
+        # Aquele dia acabou de ser marcado invalido; refaz do proximo.
         return atualizar_niveis_automaticos(force=True)
-    base = dict(base, fechamento=fec)
+    else:
+        base = dict(base, fechamento=fec)
+
     novo = calcular_niveis_do_dia(base, cfg.get("contrato", "WIN"))
     novo["fonte"] += " · C=FEC oficial"
     levels.save(novo)
@@ -1460,6 +1511,7 @@ async def market_loop():
     global last_tick, last_blue_chips, last_plano_ativacao, last_fluxo
     last_snapshot = 0.0
     last_ranking_bcast = 0.0
+    last_leitura_auto = 0.0
     loop = asyncio.get_running_loop()
     dia_atual = date.today()
     fec_conferido = False
@@ -1513,6 +1565,13 @@ async def market_loop():
                     if ativ != last_plano_ativacao:
                         last_plano_ativacao = ativ
                         await manager.broadcast({"evento": "plano_ativacao", **ativ})
+                # Leitura de IA periodica (alem do gatilho de confluencia): mantem
+                # o painel atualizado em pregao parado, sem confluencia. A cada
+                # ~15 min - contexto agora inclui macro+blue_chips (prompt maior).
+                if now - last_leitura_auto >= LEITURA_AUTO_INTERVALO:
+                    last_leitura_auto = now
+                    asyncio.create_task(gerar_leitura_automatica(
+                        {"tipo": "periodica", "msg": "leitura periodica"}))
             # Fluxo (livro + fita): lido todo ciclo porque a janela da fita e
             # curta (21 negocios) - pular ciclo significa perder negocio.
             fl = fluxo_reader.ler(last_tick.ultimo if last_tick else None)
@@ -1618,7 +1677,9 @@ app.add_middleware(
 # ----------------------------------------------------------------
 @app.get("/")
 async def dashboard():
-    return FileResponse(DASHBOARD)
+    # no-store: o HTML muda com frequencia (layout) e os dados sao ao vivo -
+    # todo refresh deve puxar a versao nova, sem depender de Ctrl+F5.
+    return FileResponse(DASHBOARD, headers={"Cache-Control": "no-store, max-age=0"})
 
 
 @app.get("/manifest.json")
@@ -1724,7 +1785,8 @@ async def _contexto_leitura_atual() -> dict:
         last_tick, last_fluxo,
         {"corretoras": ranking.ranking(),
          "ciclos_perdidos": ranking.negocios_perdidos},
-        levels.load(), hist.get("eventos") or [], hist.get("ohlc"))
+        levels.load(), hist.get("eventos") or [], hist.get("ohlc"),
+        macro=last_macro, blue_chips=last_blue_chips)
 
 
 @app.get("/leitura")
