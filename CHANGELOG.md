@@ -5,6 +5,18 @@ Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
 
 ## 2026-07-31
 
+### Blue chips: ColPorCampo portado do Módulo1 (WIN) — blindagem definitiva
+- Depois da recorrência do bug abaixo (mesmo problema, 2 dias seguidos, com
+  causas ligeiramente diferentes), portado o padrão `ColPorCampo` do
+  `Módulo1`/WIN pro `ModuloBlueChips`: cada coluna (ULT/ABE/MAX/MIN/FEC/VOL/
+  98=compra/99=venda/67=vwap) agora é localizada pela PRÓPRIA fórmula RTD da
+  linha do ativo (`"TICKER_B_0","CODIGO"`) em vez de índice fixo, com a
+  coluna atual como fallback só se a fórmula não for encontrada. Sufixo RTD
+  das ações é `_B_0` (o do WIN é `_F_0` — futuro vs. ação). Testado nos 5
+  ativos: valores continuam batendo (compra/venda na mesma escala, VWAP como
+  preço real) e o painel no dashboard confere com a direção do preço.
+  `ExportarBlueChips.bas` em disco e o módulo ao vivo no Excel sincronizados.
+
 ### Blue chips com viés de venda falso-positivo — RECORRÊNCIA da correção de 30/07
 - O mesmo bug do dia anterior voltou a aparecer no painel (fluxo "venda"
   mesmo com preço subindo). Causa: a correção de 30/07 só tinha sido salva
