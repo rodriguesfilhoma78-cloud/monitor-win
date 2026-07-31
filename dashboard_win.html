@@ -271,6 +271,12 @@ const M = { sp500:null, dxy:null, dolar:null, di:null };   // último pacote mac
 
 const $ = id => document.getElementById(id);
 const fmt = v => v==null ? "—" : Math.round(v).toLocaleString("pt-BR");
+// Escapa texto de origem externa (resumo/evidencias da IA, nota do trader)
+// antes de interpolar em innerHTML - o resto do dashboard usa numeros
+// formatados e vocabulario fixo, sem risco de injecao.
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({
+  "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
+}[c]));
 
 async function loadNiveis(){
   try{
@@ -736,10 +742,10 @@ function renderLeitura(d){
   const cls = d.vies==="compra" ? "up" : d.vies==="venda" ? "down" : "flat";
   const viesTxt = {compra:"▲ VIÉS COMPRA", venda:"▼ VIÉS VENDA",
                    misto:"◆ MISTO", indefinido:"○ INDEFINIDO"}[d.vies] || d.vies;
-  const li = arr => (arr||[]).map(x => `<li>${x}</li>`).join("");
+  const li = arr => (arr||[]).map(x => `<li>${esc(x)}</li>`).join("");
   $("leituraBox").innerHTML = `
     <div class="${cls}" style="font-family:var(--mono);font-weight:700;margin-bottom:4px">${viesTxt}</div>
-    <div style="margin-bottom:8px">${d.resumo||""}</div>
+    <div style="margin-bottom:8px">${esc(d.resumo||"")}</div>
     ${d.evidencias&&d.evidencias.length ? `<div class="amber" style="font-family:var(--mono);font-size:11px;margin-bottom:2px">EVIDÊNCIAS</div><ul style="margin:0 0 8px 16px">${li(d.evidencias)}</ul>` : ""}
     ${d.alertas&&d.alertas.length ? `<div style="font-family:var(--mono);font-size:11px;color:var(--red);margin-bottom:2px">ALERTAS</div><ul style="margin:0 0 8px 16px">${li(d.alertas)}</ul>` : ""}
     ${d.ressalvas&&d.ressalvas.length ? `<div style="font-family:var(--mono);font-size:11px;color:var(--dim);margin-bottom:2px">RESSALVAS</div><ul style="margin:0 0 0 16px;color:var(--dim)">${li(d.ressalvas)}</ul>` : ""}`;
@@ -758,7 +764,7 @@ async function gerarLeitura(forcar){
     const r = await fetch(API + "/leitura" + (forcar ? "?forcar=true" : ""));
     const d = await r.json();
     if(!r.ok){
-      $("leituraBox").innerHTML = `<span class="down">⚠ ${d.erro || "erro ao gerar leitura"}</span>`;
+      $("leituraBox").innerHTML = `<span class="down">⚠ ${esc(d.erro || "erro ao gerar leitura")}</span>`;
       $("leituraInfo").textContent = "";
     }else{
       renderLeitura(d);
@@ -804,7 +810,7 @@ async function renderOps(){
   }
   box.innerHTML = ops.map(o => {
     const dir = o.lado === "compra" ? "▲ COMPRA" : "▼ VENDA";
-    const nota = o.nota ? `<span class="op-nota-txt">“${o.nota}”</span>` : "";
+    const nota = o.nota ? `<span class="op-nota-txt">“${esc(o.nota)}”</span>` : "";
     const dTxt = (o.delta!=null) ? ` · Δ ${o.delta>=0?"+":""}${fmt(o.delta)}` : "";
     return `<div class="op-item ${o.lado}">
       <div class="op-head">

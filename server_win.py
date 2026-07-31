@@ -24,6 +24,7 @@ import io
 import json
 import sqlite3
 import statistics
+import sys
 import time
 from collections import deque
 from datetime import date
@@ -37,6 +38,13 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
+
+# Ruido benigno do asyncio no Windows: o Proactor loga ConnectionResetError
+# quando um WebSocket fecha abruptamente (aba fechada, refresh). Nao afeta
+# o funcionamento, so polui o log - suprime so esse callback especifico.
+if sys.platform == "win32":
+    from asyncio.proactor_events import _ProactorBasePipeTransport
+    _ProactorBasePipeTransport._call_connection_lost = lambda self, exc=None: None
 
 import agente_win     # leitura de fluxo por IA (Google Gemini) - consumidor, nao fonte
 
@@ -453,6 +461,7 @@ class RankingCorretoras:
         self.dia = date.today().isoformat()
         self._dados: dict = {}               # corretora -> metricas
         self.negocios_perdidos = 0           # ciclos com janela_perdida
+        self._csv_bloqueado_desde: Optional[float] = None
 
     def _slot(self, nome: str) -> dict:
         return self._dados.setdefault(nome, {
@@ -519,7 +528,30 @@ class RankingCorretoras:
                           f"{d['fin_compra']:.0f};{d['fin_venda']:.0f}")
         tmp = path.with_suffix(".tmp")
         tmp.write_text("\n".join(linhas), encoding="utf-8")
-        tmp.replace(path)                    # troca atomica (VBA nunca le pela metade)
+        self._replace_com_retry(tmp, path)
+
+    def _replace_com_retry(self, tmp: Path, path: Path,
+                            tentativas: int = 3, espera_s: float = 0.05):
+        """Retry curto cobre a colisao rapida do AtualizarAcum (VBA). Se
+        persistir, o mais provavel e o arquivo estar aberto manualmente em
+        outro programa - retry nao ajuda nesse caso, so aguardar. Loga UMA
+        vez por bloqueio (nao a cada ciclo de 1s)."""
+        for tentativa in range(tentativas):
+            try:
+                tmp.replace(path)             # troca atomica (VBA nunca le pela metade)
+                if self._csv_bloqueado_desde is not None:
+                    dur = time.time() - self._csv_bloqueado_desde
+                    print(f"[WIN] ranking_acum.csv liberado (ficou {dur:.0f}s bloqueado)")
+                    self._csv_bloqueado_desde = None
+                return
+            except PermissionError:
+                if tentativa < tentativas - 1:
+                    time.sleep(espera_s * (2 ** tentativa))
+        if self._csv_bloqueado_desde is None:
+            self._csv_bloqueado_desde = time.time()
+            print("[WIN] ranking_acum.csv bloqueado por outro processo - "
+                  "confira se nao esta aberto no Excel/Bloco de notas")
+        tmp.unlink(missing_ok=True)
 
     def carregar(self, linhas: list):
         """Restaura o acumulado do dia (boot apos restart intradiario)."""
@@ -1359,8 +1391,14 @@ class ConfluenceEngine:
             return self.flow_ema > thr and accelerating
         return self.flow_ema < -thr and accelerating
 
-    def check(self, tick: Tick) -> list[dict]:
-        """Retorna lista de eventos de confluencia detectados neste tick."""
+    def check(self, tick: Tick, fluxo: Optional[dict] = None) -> list[dict]:
+        """Retorna lista de eventos de confluencia detectados neste tick.
+
+        `fluxo` (vah/val/dentro_area) fica ~1 ciclo (POLL_INTERVAL) atrasado
+        em relacao ao tick neste ponto do market_loop, pois e lido depois do
+        bloco de confluencia. Sem problema pra VAH/VAL (nao muda tick a
+        tick) - so documentar.
+        """
         events: list[dict] = []
         self._update_delta(tick)
         price, prev = tick.ultimo, self.prev_price
@@ -1380,13 +1418,13 @@ class ConfluenceEngine:
 
         now = time.time()
         for lvl in sorted(ups):
-            events += self._track(f"up:{lvl}", price > lvl, "up", lvl, now)
+            events += self._track(f"up:{lvl}", price > lvl, "up", lvl, now, fluxo)
         for lvl in sorted(downs, reverse=True):
-            events += self._track(f"dn:{lvl}", price < lvl, "down", lvl, now)
+            events += self._track(f"dn:{lvl}", price < lvl, "down", lvl, now, fluxo)
         return events
 
     def _track(self, key: str, beyond: bool, direction: str,
-               lvl: float, now: float) -> list[dict]:
+               lvl: float, now: float, fluxo: Optional[dict] = None) -> list[dict]:
         if not beyond:
             self._persist[key] = 0
             return []
@@ -1395,21 +1433,37 @@ class ConfluenceEngine:
             return []                                  # ainda sem persistencia
         if now - self._last_fire.get(key, 0) < self.COOLDOWN_S:
             return []                                  # em cooldown
+        contexto_va = self._contexto_value_area(fluxo)
         if not self._flow_confirms(direction):
             # rompeu MAS o fluxo nao confirma -> alerta de divergencia
             self._last_fire[key] = now
             return [{
                 "evento": "divergencia", "direcao": direction, "nivel": lvl,
                 "delta_ema": round(self.flow_ema or 0, 1),
-                "msg": f"Rompeu {lvl:.0f} SEM confirmacao de fluxo (possivel violino)"
+                "contexto_value_area": contexto_va,
+                "msg": f"Rompeu {lvl:.0f} SEM confirmacao de fluxo "
+                       f"({contexto_va or 'sem VAH/VAL no momento'})"
             }]
         self._last_fire[key] = now
         return [{
             "evento": "confluencia", "direcao": direction, "nivel": lvl,
             "delta_ema": round(self.flow_ema, 1),
+            "contexto_value_area": contexto_va,
             "msg": f"CONFLUENCIA: {'rompimento' if direction=='up' else 'perda'} "
-                   f"de {lvl:.0f} confirmado pelo fluxo (EMA {self.flow_ema:+.0f})"
+                   f"de {lvl:.0f} confirmado pelo fluxo (EMA {self.flow_ema:+.0f}, "
+                   f"{contexto_va or 'sem VAH/VAL'})"
         }]
+
+    @staticmethod
+    def _contexto_value_area(fluxo: Optional[dict]) -> Optional[str]:
+        """Iniciativa/Responsiva (Dalton, cap. 25). Usa vah/val so como
+        NIVEIS DE PRECO (a forma do perfil) - nunca vap_total, que e
+        conhecidamente inconsistente no feed do RTD (mesma ressalva do
+        agente_win.py e do docstring de FluxoReader._vap)."""
+        if not fluxo or fluxo.get("vah") is None:
+            return None
+        return ("iniciativa (fora da area de valor)" if not fluxo.get("dentro_area")
+                else "responsiva (ainda dentro da area de valor)")
 
 
 # ----------------------------------------------------------------
@@ -1543,7 +1597,7 @@ async def market_loop():
                 last_tick = tick
                 await manager.broadcast(asdict(tick))
                 # Motor de confluencia: mapa (niveis) x fluxo (delta)
-                for ev in engine.check(tick):
+                for ev in engine.check(tick, fluxo=last_fluxo):
                     print(f"[WIN] {ev['msg']}")
                     await manager.broadcast(ev)
                     # persiste o sinal para analise historica
