@@ -3,6 +3,25 @@
 Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
 
+## 2026-07-31
+
+### Blue chips com viés de venda falso-positivo — RECORRÊNCIA da correção de 30/07
+- O mesmo bug do dia anterior voltou a aparecer no painel (fluxo "venda"
+  mesmo com preço subindo). Causa: a correção de 30/07 só tinha sido salva
+  no arquivo `ExportarBlueChips.bas` em disco, nunca reimportada para o
+  módulo VBA (`ModuloBlueChips`) que estava de fato rodando dentro do
+  `WDO_Master_RTD.xlsm` já aberto — editar o `.bas` sozinho não é
+  suficiente, o módulo ao vivo continua com o código antigo até ser
+  reimportado/recolado no VBE.
+- Corrigido de novo (mesmas colunas: 27=compra, 29=venda, 30=vwap,
+  10=volume), desta vez aplicando a mutação diretamente no `CodeModule` do
+  workbook aberto via COM (`DeleteLines` + `AddFromString`). Religados os 4
+  loops do workbook (`IniciarExportWIN`, `IniciarExportPETR4`,
+  `IniciarExportPetroVale`, `IniciarExportBlueChips`) logo em seguida, por
+  causa do reset de variáveis de módulo que essa mutação causa (ver nota de
+  30/07 abaixo). Conferido no dashboard: fluxo agora bate com a direção do
+  preço (ex.: VALE3 caindo → venda, PETR4 subindo → compra).
+
 ## 2026-07-30
 
 ### Pivots presos no OHLC de 23/07
