@@ -82,6 +82,15 @@ Regras de leitura especificas deste sistema (nao invente numeros fora delas):
   blue_chips.ativos). Trate como CONFIRMACAO ou CONTRASTE do movimento do
   indice (ex.: WIN subindo com blue chips majoritariamente "venda" e um
   alerta de fragilidade), nunca como fonte propria de vies do WIN.
+- vies_mercado (quando presente) e um consenso JA CALCULADO (nao invente o
+  seu) entre macro.alinhamento_com_win, blue_chips.vies_agregado e o proprio
+  var% do WIN - forca = quantos desses concordam (0 a 3), total_sinais =
+  quantos votaram. forca >= 2 e consenso real, cite-o e deixe seu proprio
+  "vies" refletir esse numero (nao contrarie forca alta sem uma evidencia
+  concreta e explicita da fita/livro no contexto). forca <= 1 ou
+  vies_mercado ausente = sem consenso de mercado, va so pela fita/livro e
+  diga "vies" indefinido/misto se a fita tambem nao estiver clara - NAO
+  force uma direcao so pra parecer decidido.
 
 Responda em portugues do Brasil, direto, sem jargao redundante. Toda
 afirmacao de vies ou alerta deve ter pelo menos um numero do contexto entre
@@ -186,6 +195,53 @@ def _alinhamento_macro(macro: dict, tick) -> Optional[dict]:
             "win_var_pct": round(win_var, 2) if win_var is not None else None}
 
 
+def vies_consolidado(alinhamento: Optional[dict],
+                      blue_chips: Optional[dict]) -> Optional[dict]:
+    """Viés de mercado CALCULADO (nao pelo modelo): concordancia entre o
+    pano de fundo macro (`alinhamento_com_win`, ja calculado por
+    `_alinhamento_macro`), as blue chips (proxy do Ibovespa) e o proprio
+    movimento do WIN no dia (embutido no `alinhamento`, campo win_var_pct).
+
+    Isso da pra IA um numero pronto em vez de pedir pra ela "sentir" o
+    consenso a cada chamada (mais assertivo/consistente entre leituras) e
+    cria um sinal DETERMINISTICO, separado do texto livre do modelo, que da
+    pra logar em `leituras` e medir taxa de acerto sozinho
+    (`backtest_confluencia.py`).
+
+    votos: +1 macro alinhado com compra / blue chips compra / WIN subindo,
+           -1 o espelho. Sinais "misto"/"neutro"/ausentes nao votam.
+    """
+    votos = []
+    if alinhamento and alinhamento["direcao"] in ("alinhado_compra", "alinhado_venda"):
+        votos.append(1 if alinhamento["direcao"] == "alinhado_compra" else -1)
+    bc_vies = (blue_chips or {}).get("vies")
+    if bc_vies == "compra":
+        votos.append(1)
+    elif bc_vies == "venda":
+        votos.append(-1)
+    win_var = alinhamento.get("win_var_pct") if alinhamento else None
+    if win_var is not None:
+        if win_var > 0.05:
+            votos.append(1)
+        elif win_var < -0.05:
+            votos.append(-1)
+    if not votos:
+        return None
+    compra, venda = votos.count(1), votos.count(-1)
+    if compra > venda:
+        vies, forca = "compra", compra
+    elif venda > compra:
+        vies, forca = "venda", venda
+    else:
+        vies, forca = "misto", max(compra, venda)
+    return {
+        "vies": vies, "forca": forca, "total_sinais": len(votos),
+        "macro": alinhamento["direcao"] if alinhamento else None,
+        "blue_chips": bc_vies,
+        "win_var_pct": win_var,
+    }
+
+
 def montar_contexto(tick, fluxo: Optional[dict], ranking_dados: dict,
                      niveis: dict, eventos_hoje: list,
                      ohlc_hoje: Optional[dict],
@@ -222,6 +278,7 @@ def montar_contexto(tick, fluxo: Optional[dict], ranking_dados: dict,
         ctx["ohlc_hoje"] = {k: ohlc_hoje.get(k) for k in
                             ("abertura", "maxima", "minima", "valido")
                             if k in ohlc_hoje}
+    alinhamento = None
     if macro:
         ctx["macro"] = {
             "sp500_var_pct": (macro.get("sp500") or {}).get("var_pct"),
@@ -244,6 +301,9 @@ def montar_contexto(tick, fluxo: Optional[dict], ranking_dados: dict,
                 for a in blue_chips["ativos"]
             ],
         }
+    vm = vies_consolidado(alinhamento, blue_chips)
+    if vm:
+        ctx["vies_mercado"] = vm
     return ctx
 
 

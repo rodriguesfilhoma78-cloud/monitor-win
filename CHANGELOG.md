@@ -3,6 +3,61 @@
 Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
 
+## 2026-08-11
+
+### Tabela `leituras` + backtest retroativo de assertividade
+- Diagnóstico: a leitura de IA (Gemini) nunca era persistida no banco - só
+  ia pro WS/dashboard e se perdia. Sem histórico não dava pra medir taxa de
+  acerto nenhuma, muito menos evoluir/comparar. Nova tabela `leituras`
+  (`server_win.py`, `SnapshotDB._init`) grava toda leitura (manual,
+  periódica ou por confluência): `vies` do modelo, `vies_mercado` calculado,
+  resumo/evidências/alertas/ressalvas, gatilho, preço no momento.
+- `backtest_confluencia.py` (novo, standalone, sem dependências externas):
+  cruza `eventos`/`leituras` com `snapshots` (preço 5/15/30min depois) pra
+  medir se a direção apontada realmente se confirmou. Rodado contra os 231
+  eventos já existentes (03/07 a hoje): confluência 44-89% de acerto
+  conforme o horizonte (amostra pequena, 9 eventos), divergência 45-57%
+  (222 eventos - perto de aleatório, esperado já que "divergência" é
+  justamente ausência de confirmação de fluxo). Baseline honesta - "acerto"
+  aqui é só o preço ter se movido na direção certa, não é resultado de
+  operação real.
+- Índices novos em `snapshots`, `fluxo`, `eventos`, `macro_snapshots` (por
+  `dia`) - essas tabelas (88k/238k linhas) não tinham índice e cresciam sem
+  ele; toda query `WHERE dia=?` (histórico, backtest) fazia table scan.
+
+### Viés de mercado calculado (macro + blue chips + preço do WIN)
+- `agente_win.vies_consolidado()`: combina `alinhamento_com_win` (macro),
+  `blue_chips.vies_agregado` e o var% do próprio WIN num consenso
+  determinístico (`vies` + `forca` de 0 a 3 = quantos concordam). Isso dá
+  pra IA um número pronto em vez de "sentir" o consenso a cada chamada
+  (mais consistente entre leituras) e cria um sinal separado do texto livre
+  do modelo, medível sozinho no backtest. Prompt do Gemini atualizado pra
+  citar `vies_mercado` e não contrariar força >=2 sem evidência concreta da
+  fita/livro.
+- Dashboard (`dashboard_win.html`, `renderConclusao()`): quando a leitura
+  chega (automática por confluência ou manual), mostra um banner de
+  "CONCLUSÃO" cruzando o viés do modelo com o `vies_mercado` calculado
+  (concordam = confluente, divergem = alerta, força <2 = sem consenso),
+  reaproveitando o estilo do banner macro (`.align-banner`) já existente.
+
+## 2026-08-03
+
+### Blue chips: Fluxo trocado de agressão (agr_compra/venda) para Var% de preço
+- Usuário reportou PETR4 e BBAS3 com Var% negativo mas Fluxo "compra" verde.
+  Diferente das recorrências de 30/31-07 (colunas erradas via RTD), dessa vez
+  os números de agressão batiam certo em escala (ex.: PETR4 agr_compra
+  4.199.100 vs agr_venda 3.399.300) — era uma divergência real entre duas
+  métricas diferentes: fluxo de ordens do dia (agressão) vs. variação de
+  preço vs. fechamento anterior.
+- Decisão do usuário: Fluxo deve sempre bater com o sinal do Var% (preço
+  caiu = venda, subiu = compra). `BlueChipsReader` (`server_win.py`) agora
+  classifica `fluxo` por `var_pct` em vez de `agr_compra - agr_venda`
+  (`VAR_MIN = 0.1%` de zona neutra). `dominancia` (só usada pra largura da
+  barrinha visual) virou `abs(var_pct) * 6`. Leitura de agr_compra/venda no
+  CSV continua existindo, só parou de alimentar essa classificação.
+- Servidor reiniciado e conferido ao vivo no dashboard: as 5 blue chips
+  batendo Fluxo com Var% (ex.: VALE3 -2,29% → venda, ITUB4 +0,67% → compra).
+
 ## 2026-07-31
 
 ### Blue chips: ColPorCampo portado do Módulo1 (WIN) — blindagem definitiva

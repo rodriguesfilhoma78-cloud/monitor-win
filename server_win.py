@@ -569,7 +569,11 @@ class RankingCorretoras:
 # ----------------------------------------------------------------
 class BlueChipsReader:
     """Le dados_blue_chips.csv (gerado por ExportarBlueChips.bas) e
-    classifica o fluxo de cada ativo pela dominancia de agressao.
+    classifica o fluxo de cada ativo pela variacao de preco vs. fechamento
+    anterior (Var%). Antes usava a dominancia de agressao (agr_compra vs
+    agr_venda), mas isso podia divergir do preco (ex.: preco caindo no dia
+    porem com mais volume agressor comprador acumulado), o que confundia
+    o painel - a cor/seta do Fluxo agora bate sempre com o sinal do Var%.
 
     Formato esperado (separador ';', 1 linha por ativo):
     ticker;ultimo;abertura;maxima;minima;fec_ant;agr_compra;agr_venda;vwap;volume;timestamp
@@ -577,7 +581,7 @@ class BlueChipsReader:
 
     FIELDS = ["ticker", "ultimo", "abertura", "maxima", "minima", "fec_ant",
               "agr_compra", "agr_venda", "vwap", "volume", "timestamp"]
-    DOMINANCIA_MIN = 5.0   # % de dominancia abaixo disso = "neutro" (ruido)
+    VAR_MIN = 0.1   # % de variacao abaixo disso = "neutro" (ruido)
 
     def __init__(self, path: Path, alt_paths: tuple = ()):
         # Le do arquivo MAIS RECENTE entre os candidatos. Blindagem 22/07: o
@@ -612,14 +616,14 @@ class BlueChipsReader:
             d = dict(zip(self.FIELDS, row))
             ultimo = _to_float(d["ultimo"])
             fec = _to_float(d["fec_ant"])
-            ac = _to_float(d["agr_compra"]) or 0.0
-            av = _to_float(d["agr_venda"]) or 0.0
-            delta = ac - av
-            dominancia = abs(delta) / (ac + av) * 100 if (ac + av) else 0.0
-            fluxo = "neutro"
-            if dominancia > self.DOMINANCIA_MIN:
-                fluxo = "compra" if delta > 0 else "venda"
             var_pct = ((ultimo - fec) / fec * 100) if (ultimo and fec) else None
+            fluxo = "neutro"
+            if var_pct is not None and abs(var_pct) > self.VAR_MIN:
+                fluxo = "compra" if var_pct > 0 else "venda"
+            # x6 so a barra (0-18px no dashboard) fique legivel com variacoes
+            # tipicas de blue chips (~0-3%), que antes eram % de dominancia
+            # de agressao (0-100) e usavam a escala crua.
+            dominancia = abs(var_pct) * 6 if var_pct is not None else 0.0
             out.append({
                 "ticker": d["ticker"], "ultimo": ultimo, "var_pct": var_pct,
                 "peso_ibov": PESO_IBOV.get(d["ticker"]), "fluxo": fluxo,
@@ -927,6 +931,34 @@ class SnapshotDB:
                     dolar REAL, dolar_var REAL,
                     di REAL, di_var_bps REAL
                 )""")
+            # Leituras de IA (Gemini): antes so iam pro WS e se perdiam - sem
+            # historico nao da pra medir taxa de acerto (ver
+            # backtest_confluencia.py). gatilho_tipo: confluencia/periodica/manual.
+            # vies e do modelo; vies_mercado/forca_mercado sao o consenso
+            # CALCULADO (agente_win.vies_consolidado), pra poder medir os dois
+            # separado.
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS leituras (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dia TEXT, ts TEXT,
+                    gatilho_tipo TEXT, gatilho_nivel REAL, gatilho_direcao TEXT,
+                    vies TEXT, vies_mercado TEXT, forca_mercado INTEGER,
+                    resumo TEXT, evidencias TEXT, alertas TEXT, ressalvas TEXT,
+                    preco REAL, modelo TEXT, cache INTEGER
+                )""")
+            # Indices por dia: snapshots (88k+ linhas) e fluxo (238k+) cresciam
+            # sem indice e todo endpoint que filtra WHERE dia=? (historico,
+            # ranking, backtest) fazia table scan crescente.
+            con.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_dia_ts "
+                        "ON snapshots(dia, ts)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_fluxo_dia_ts "
+                        "ON fluxo(dia, ts)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_eventos_dia "
+                        "ON eventos(dia)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_macro_dia "
+                        "ON macro_snapshots(dia)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_leituras_dia "
+                        "ON leituras(dia)")
             # migracao: tabelas criadas com Brent (17/07 cedo) -> S&P 500
             for old, new in (("brent", "sp500"), ("brent_var", "sp500_var")):
                 try:
@@ -1158,6 +1190,28 @@ class SnapshotDB:
                 (date.today().isoformat(), time.strftime("%H:%M:%S"),
                  ev.get("evento"), ev.get("direcao"), ev.get("nivel"),
                  ev.get("delta_ema"), ev.get("msg")))
+
+    def salvar_leitura_sync(self, leitura: dict, gatilho: Optional[dict] = None,
+                            preco: Optional[float] = None):
+        """Persiste a leitura de IA (vies do modelo + vies_mercado calculado)
+        pra dar dado ao backtest_confluencia.py - ver nota da tabela em _init."""
+        gatilho = gatilho or {}
+        vm = leitura.get("vies_mercado") or {}
+        with sqlite3.connect(self.path) as con:
+            con.execute(
+                "INSERT INTO leituras (dia,ts,gatilho_tipo,gatilho_nivel,"
+                "gatilho_direcao,vies,vies_mercado,forca_mercado,resumo,"
+                "evidencias,alertas,ressalvas,preco,modelo,cache) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (date.today().isoformat(), time.strftime("%H:%M:%S"),
+                 gatilho.get("evento") or gatilho.get("tipo") or "manual",
+                 gatilho.get("nivel"), gatilho.get("direcao"),
+                 leitura.get("vies"), vm.get("vies"), vm.get("forca"),
+                 leitura.get("resumo"),
+                 json.dumps(leitura.get("evidencias") or [], ensure_ascii=False),
+                 json.dumps(leitura.get("alertas") or [], ensure_ascii=False),
+                 json.dumps(leitura.get("ressalvas") or [], ensure_ascii=False),
+                 preco, leitura.get("modelo"), int(bool(leitura.get("cache")))))
 
     def save_macro_sync(self, sp500: Optional[dict], dxy: Optional[dict],
                         dolar: Optional[dict], di: Optional[dict]):
@@ -1866,6 +1920,13 @@ async def get_leitura(forcar: bool = False):
             None, agente_win.gerar_leitura, contexto, forcar)
     except RuntimeError as e:
         return JSONResponse({"erro": str(e)}, status_code=502)
+    leitura["vies_mercado"] = contexto.get("vies_mercado")
+    try:
+        await loop.run_in_executor(
+            None, db.salvar_leitura_sync, leitura, {"tipo": "manual"},
+            last_tick.ultimo if last_tick else None)
+    except Exception as e:
+        print(f"[WIN] Falha ao persistir leitura manual em `leituras` (seguindo): {e}")
     return leitura
 
 
@@ -1891,7 +1952,16 @@ async def gerar_leitura_automatica(gatilho: dict):
         leitura = await loop.run_in_executor(
             None, agente_win.gerar_leitura, contexto, False)   # respeita o cache de 45s
         leitura["gatilho"] = gatilho
+        leitura["vies_mercado"] = contexto.get("vies_mercado")
         await manager.broadcast({"evento": "leitura_auto", **leitura})
+        try:
+            await loop.run_in_executor(
+                None, db.salvar_leitura_sync, leitura, gatilho,
+                last_tick.ultimo if last_tick else None)
+        except Exception as e:
+            # Persistencia e secundaria - uma falha aqui nao pode derrubar o
+            # gatilho automatico nem virar excecao perdida no asyncio.create_task.
+            print(f"[WIN] Falha ao persistir leitura em `leituras` (seguindo): {e}")
         print(f"[WIN] Leitura automatica gerada (gatilho: {gatilho.get('msg')})")
     except RuntimeError as e:
         print(f"[WIN] Leitura automatica falhou: {e}")

@@ -738,6 +738,26 @@ function toggleSim(){
 }
 
 /* ============ LEITURA DO FLUXO (IA) ============ */
+function renderConclusao(d){
+  // "Conclusão" = cruza o viés que o MODELO deu com o viés de mercado
+  // CALCULADO (agente_win.vies_consolidado: macro + blue chips + var% do
+  // WIN) - concordância com força >=2 é o sinal mais assertivo do painel;
+  // reaproveita o estilo do banner macro (.align-banner) pra ficar familiar.
+  const vm = d.vies_mercado;
+  if(!vm || !vm.vies) return "";
+  const concorda = vm.vies === d.vies;
+  const cls = vm.forca < 2 ? "misto" : (concorda ? "fav" : "contra");
+  const rotulo = vm.forca < 2
+    ? "SEM CONSENSO CLARO DE MERCADO"
+    : (concorda ? "CONFLUENTE COM O MERCADO" : "IA DIVERGE DO CONSENSO DE MERCADO");
+  const partes = [
+    vm.macro ? `macro ${vm.macro.replace("alinhado_","alinhado ").replace("_"," ")}` : null,
+    vm.blue_chips ? `blue chips ${vm.blue_chips}` : null,
+    vm.win_var_pct != null ? `WIN ${vm.win_var_pct>=0?"+":""}${vm.win_var_pct.toFixed(2).replace(".",",")}%` : null,
+  ].filter(Boolean).join(" · ");
+  return `<div class="align-banner ${cls}"><b>CONCLUSÃO · ${rotulo}</b><br>
+    mercado ${vm.forca}/${vm.total_sinais} sinais em ${vm.vies}${partes?" · "+partes:""}</div>`;
+}
 function renderLeitura(d){
   const cls = d.vies==="compra" ? "up" : d.vies==="venda" ? "down" : "flat";
   const viesTxt = {compra:"▲ VIÉS COMPRA", venda:"▼ VIÉS VENDA",
@@ -745,6 +765,7 @@ function renderLeitura(d){
   const li = arr => (arr||[]).map(x => `<li>${esc(x)}</li>`).join("");
   $("leituraBox").innerHTML = `
     <div class="${cls}" style="font-family:var(--mono);font-weight:700;margin-bottom:4px">${viesTxt}</div>
+    ${renderConclusao(d)}
     <div style="margin-bottom:8px">${esc(d.resumo||"")}</div>
     ${d.evidencias&&d.evidencias.length ? `<div class="amber" style="font-family:var(--mono);font-size:11px;margin-bottom:2px">EVIDÊNCIAS</div><ul style="margin:0 0 8px 16px">${li(d.evidencias)}</ul>` : ""}
     ${d.alertas&&d.alertas.length ? `<div style="font-family:var(--mono);font-size:11px;color:var(--red);margin-bottom:2px">ALERTAS</div><ul style="margin:0 0 8px 16px">${li(d.alertas)}</ul>` : ""}
