@@ -3,6 +3,17 @@
 Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
 
+## 2026-08-13
+
+### Cutoff de abertura do pivô automático relaxado para 10h
+- `PREGAO_ABERTURA_ATE` (`server_win.py`) subiu de `"09:30"` para `"10:00"`:
+  o pivô automático travava em "cobertura parcial" nos dias em que o
+  Excel/Profit só começava a mandar tick um pouco depois das 09:30. Esse
+  limite também é reusado em `dia_valido()` e na busca do último dia válido
+  como base de pivô, então o efeito é consistente em todo o cálculo.
+- Muda só na próxima vez que o Monitor WIN for iniciado (server ficou rodando
+  com o valor antigo em memória até então, por decisão do usuário).
+
 ## 2026-08-11
 
 ### Tabela `leituras` + backtest retroativo de assertividade

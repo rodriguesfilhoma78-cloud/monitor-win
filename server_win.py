@@ -76,7 +76,7 @@ HOST, PORT    = "127.0.0.1", 8001
 # Cobertura minima para um pregao virar base de pivots: o server tem que ter
 # pego a abertura e o fechamento. Fora disso, H/L sao parciais e os pivots do
 # dia seguinte saem errados.
-PREGAO_ABERTURA_ATE = "09:30"    # primeiro tick tem que vir antes disso
+PREGAO_ABERTURA_ATE = "10:00"    # primeiro tick tem que vir antes disso
 PREGAO_FECHA_APOS   = "17:45"    # ultimo tick tem que vir depois disso
 
 # Peso aproximado de cada blue chip no IBOV (atualizar periodicamente -
