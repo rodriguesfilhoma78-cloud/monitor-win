@@ -3,6 +3,39 @@
 Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
 
+## 2026-08-22
+
+### Leitura de IA calibrada por histórico real (`historico_similar`)
+- Origem: análise do framework TradingAgents (Tauric Research) por pedido do
+  usuário - a maior parte não se aplica (debate multiagente Bull/Bear/Risk
+  pra decidir Comprar/Vender contradiz a decisão já tomada de o agente nunca
+  recomendar entrada/saída; analistas de fundamentos/notícias/social não têm
+  equivalente no WIN). A única ideia aproveitada: o padrão de puxar
+  situações passadas parecidas antes de decidir, adaptado sem ChromaDB nem
+  embeddings - só uma query no que já existe.
+- `SnapshotDB.historico_similar_sync()` (novo, `server_win.py`): dado o
+  `vies_mercado` calculado agora (compra/venda, força ≥2), busca as até 60
+  leituras passadas mais recentes com o MESMO `vies_mercado`/força na tabela
+  `leituras`, e mede se o preço bateu a direção 15min depois via `snapshots`
+  - mesma lógica de `backtest_confluencia.backtest_leituras()`, mas sob
+  demanda e só para o caso atual, não recalcula nada que já roda. Puramente
+  leitura (nenhum INSERT/UPDATE), protegido por try/except em
+  `_contexto_leitura_atual()` para nunca derrubar `/leitura` se a query
+  falhar (ex.: lock do SQLite durante escrita concorrente do poller).
+- `agente_win.py`: novo campo `historico_similar` no contexto (quando
+  presente) e nova regra no `SYSTEM_PROMPT` explicando que é calibração de
+  confiança medida (`acerto_pct` sobre `n` casos), não uma fonte nova de
+  viés - não muda `OUTPUT_SCHEMA` nem a lógica de `montar_contexto()`.
+- Testado contra o `win_history.db` real (só leitura, contagem de
+  `leituras`/`snapshots` conferida idêntica antes/depois): 140 leituras
+  acumuladas desde 11/08, `historico_similar_sync("compra")` → 58 casos
+  comparáveis / 46,6% de acerto em 15min; `"venda"` → 48 casos / 45,8%.
+  Wiring ponta a ponta testado a frio (sem tick/macro ao vivo - fim de
+  semana, servidor parado) e com `vies_mercado` forçado para simular o
+  caminho quente; falha simulada de banco (`database is locked`) confirmada
+  como não-fatal. Não testado contra a API real do Gemini (sem
+  `GEMINI_API_KEY` neste ambiente) - só valida de fato no próximo pregão.
+
 ## 2026-08-13
 
 ### Cutoff de abertura do pivô automático relaxado para 10h

@@ -1213,6 +1213,65 @@ class SnapshotDB:
                  json.dumps(leitura.get("ressalvas") or [], ensure_ascii=False),
                  preco, leitura.get("modelo"), int(bool(leitura.get("cache")))))
 
+    def historico_similar_sync(self, vies_mercado: str, forca_min: int = 2,
+                               horizonte_min: int = 15, limite: int = 60
+                               ) -> Optional[dict]:
+        """Taxa de acerto REAL de leituras passadas com o MESMO vies_mercado
+        calculado (mesma direcao, mesmo nivel de consenso >= forca_min) -
+        espelha a logica de backtest_confluencia.backtest_leituras, mas so
+        para o vies atual e sob demanda (le `leituras`+`snapshots`, nao
+        escreve nada, nao muda o que ja roda). Da pra IA um numero de
+        calibracao de confianca em vez de tratar toda leitura como sem
+        passado. None se nao houver caso comparavel ainda (tabela nova ou
+        poucos dias de coleta)."""
+        if vies_mercado not in ("compra", "venda"):
+            return None
+        direcao_alta = (vies_mercado == "compra")
+        with sqlite3.connect(self.path) as con:
+            linhas = con.execute(
+                "SELECT dia, ts, preco FROM leituras "
+                "WHERE vies_mercado=? AND forca_mercado>=? "
+                "ORDER BY dia DESC, ts DESC LIMIT ?",
+                (vies_mercado, forca_min, limite)).fetchall()
+            acertos = erros = neutros = sem_dado = 0
+            for dia, ts, preco in linhas:
+                baseline = preco
+                if baseline is None:
+                    row = con.execute(
+                        "SELECT ultimo FROM snapshots WHERE dia=? AND ts>=? "
+                        "AND ultimo IS NOT NULL ORDER BY ts LIMIT 1",
+                        (dia, ts)).fetchone()
+                    baseline = row[0] if row else None
+                h, m, s = (int(x) for x in ts.split(":"))
+                total = h * 3600 + m * 60 + s + horizonte_min * 60
+                h2, resto = divmod(total % 86400, 3600)
+                m2, s2 = divmod(resto, 60)
+                ts_fut = f"{h2:02d}:{m2:02d}:{s2:02d}"
+                row = con.execute(
+                    "SELECT ultimo FROM snapshots WHERE dia=? AND ts>=? "
+                    "AND ultimo IS NOT NULL ORDER BY ts LIMIT 1",
+                    (dia, ts_fut)).fetchone()
+                futuro = row[0] if row else None
+                if baseline is None or futuro is None:
+                    sem_dado += 1
+                    continue
+                delta = futuro - baseline
+                if delta == 0:
+                    neutros += 1
+                elif (delta > 0) == direcao_alta:
+                    acertos += 1
+                else:
+                    erros += 1
+        base = acertos + erros
+        if base == 0:
+            return None
+        return {
+            "vies": vies_mercado, "forca_min": forca_min,
+            "horizonte_min": horizonte_min,
+            "n": base, "acerto_pct": round(100 * acertos / base, 1),
+            "amostra_total": len(linhas),
+        }
+
     def save_macro_sync(self, sp500: Optional[dict], dxy: Optional[dict],
                         dolar: Optional[dict], di: Optional[dict]):
         """Historico macro para analise de correlacao com o WIN."""
@@ -1889,12 +1948,22 @@ async def _contexto_leitura_atual() -> dict:
     loop = asyncio.get_running_loop()
     dia = date.today().isoformat()
     hist = await loop.run_in_executor(None, db.historico_sync, dia)
-    return agente_win.montar_contexto(
+    ctx = agente_win.montar_contexto(
         last_tick, last_fluxo,
         {"corretoras": ranking.ranking(),
          "ciclos_perdidos": ranking.negocios_perdidos},
         levels.load(), hist.get("eventos") or [], hist.get("ohlc"),
         macro=last_macro, blue_chips=last_blue_chips)
+    vm = ctx.get("vies_mercado")
+    if vm and vm.get("vies") in ("compra", "venda") and (vm.get("forca") or 0) >= 2:
+        try:
+            historico = await loop.run_in_executor(
+                None, db.historico_similar_sync, vm["vies"])
+            if historico:
+                ctx["historico_similar"] = historico
+        except Exception as e:
+            print(f"[WIN] Falha ao calcular historico_similar (seguindo): {e}")
+    return ctx
 
 
 @app.get("/leitura")

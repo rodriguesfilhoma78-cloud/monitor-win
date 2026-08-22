@@ -91,6 +91,14 @@ Regras de leitura especificas deste sistema (nao invente numeros fora delas):
   vies_mercado ausente = sem consenso de mercado, va so pela fita/livro e
   diga "vies" indefinido/misto se a fita tambem nao estiver clara - NAO
   force uma direcao so pra parecer decidido.
+- historico_similar (quando presente) e a taxa de acerto REAL, medida no
+  proprio historico do sistema (nao inventada), de leituras passadas com o
+  MESMO vies_mercado e forca de hoje (campo acerto_pct, sobre n casos
+  comparaveis, no horizonte de horizonte_min minutos). E informacao de
+  CALIBRACAO de confianca, nao uma fonte nova de vies - se acerto_pct for
+  baixo (ex.: <50%), mencione que esse tipo de sinal tem historico fraco;
+  se for alto, pode reforcar o tom sem virar recomendacao. Se ausente ou n
+  pequeno, nao mencione confianca historica.
 
 Responda em portugues do Brasil, direto, sem jargao redundante. Toda
 afirmacao de vies ou alerta deve ter pelo menos um numero do contexto entre
