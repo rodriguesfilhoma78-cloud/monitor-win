@@ -1,8 +1,9 @@
 """
 ================================================================
- MONITOR WIN - agente_win.py
+ MONITOR WDO - agente_wdo.py
  Agente de leitura de fluxo (IA) - CONSUMIDOR, nao fonte de dados
 ----------------------------------------------------------------
+ Fork de agente_win.py (Monitor WIN) - mesma logica, ativo trocado.
  Papel: leitura e alerta, com evidencias (numeros do contexto).
  NUNCA recomendacao de entrada/saida, nunca execucao de ordem -
  quem decide e o trader (ver perfil do usuario).
@@ -30,6 +31,8 @@ from typing import Optional
 
 import httpx
 
+import casado_wdo   # preco justo do WDO vs dolar a vista (o "casado")
+
 GEMINI_URL   = "https://generativelanguage.googleapis.com/v1beta/interactions"
 # flash-lite: mais rapido e mais barato em cota do nivel gratuito. Troque via
 # variavel de ambiente se quiser mais qualidade (ex.: setx GEMINI_MODEL "gemini-3.6-flash").
@@ -38,7 +41,7 @@ TIMEOUT_S    = 30.0
 CACHE_TTL_S  = 45.0       # nao gera leitura nova a cada clique repetido do botao
 MAX_OUTPUT_TOKENS = 320    # leitura compacta: 1 frase + no maximo 2 evidencias
 
-SYSTEM_PROMPT = """Voce e um leitor de fluxo para um day trader de WIN (mini-indice B3, Profit Pro).
+SYSTEM_PROMPT = """Voce e um leitor de fluxo para um day trader de WDO (mini-dolar B3, Profit Pro).
 
 Seu unico papel e LER o que os dados mostram e ALERTAR o que se destaca,
 sempre citando o numero exato que sustenta cada afirmacao. Voce NAO
@@ -48,14 +51,20 @@ sustentar uma leitura clara, diga isso em vez de forcar uma conclusao.
 
 Regras de leitura especificas deste sistema (nao invente numeros fora delas):
 - delta_acumulado_dia (agr_compra - agr_venda do tick) e ACUMULADO DO
-  PREGAO INTEIRO, na escala de milhares/milhoes de contratos do WIN. NAO
-  compare essa escala com o delta_ema dos eventos de confluencia/divergencia,
-  que e o fluxo INCREMENTAL suavizado (grandeza muito menor).
+  PREGAO INTEIRO, na escala de contratos do WDO. NAO compare essa escala
+  com o delta_ema dos eventos de confluencia/divergencia, que e o fluxo
+  INCREMENTAL suavizado (grandeza muito menor).
 - O ranking de corretoras (campo ranking.top5) e um PISO do dia, nao o total
   real: se ciclos_perdidos > 0, parte da fita passou sem ser vista. Corretora
   agressora NAO e posicao (uma corretora vendendo pode ser 200 clientes
   diferentes) - o sinal util e dominancia e lote_medio (institucional tende
   a lote maior que varejo), nao o saldo absoluto.
+- ranking.top5_janela e o MESMO ranking, mas so dos ultimos ~30 min (nao desde
+  a abertura) - use para dizer QUEM ESTA AGREDINDO AGORA. E mais ruidoso que
+  o top5 do dia (um lote grande pode virar o saldo da janela rapido): se as
+  duas listas divergirem (ex.: corretora compradora no dia mas vendedora na
+  janela), isso e o sinal mais interessante - descreva a troca, nao escolha
+  uma das duas como "a verdadeira".
 - pressao_fita e desequilibrio da fita vem da JANELA CURTA (~60s), nao do dia.
 - O livro (bid/ask/profundidade) e pressao PARADA; a fita (pressao_fita,
   lote_medio) e pressao EXECUTADA. Livro cheio de um lado com fita batendo
@@ -68,29 +77,38 @@ Regras de leitura especificas deste sistema (nao invente numeros fora delas):
   total.
 - eventos_recentes (confluencia/divergencia) ja sao sinais do motor local;
   cite-os quando relevantes, nao os recalcule.
-- macro (sp500_var_pct, dxy_var_pct, dolar_var_pct, di_var_bps) e o pano de
-  fundo do dia (risk-on/off global, cambio, juros) - NAO e o WIN, e contexto.
-  macro.alinhamento_com_win ja aplica a MESMA regra do banner do dashboard
-  (S&P500 sobe=favoravel, DXY/dolar/DI sobem=contrario ao Ibov) comparada ao
-  var% do WIN; use "alinhado_compra"/"alinhado_venda" para dizer que o vento
-  macro REFORCA o movimento local, e "divergente" para dizer que o WIN esta
-  andando CONTRA o pano de fundo (mencione isso como alerta, nao ignore).
-  "misto" so significa que os sinais macro estao empatados ou o proprio WIN
-  esta parado - nao va contra a fita por causa disso.
-- blue_chips.vies_agregado (compra/venda/neutro, positivas/negativas de 5)
-  e o fluxo agregado das 5 acoes que mais pesam no Ibovespa (peso_ibov em
-  blue_chips.ativos). Trate como CONFIRMACAO ou CONTRASTE do movimento do
-  indice (ex.: WIN subindo com blue chips majoritariamente "venda" e um
-  alerta de fragilidade), nunca como fonte propria de vies do WIN.
+- macro (brent_var_pct, dxy_var_pct, ouro_var_pct, juros_us_var_bps) e o
+  pano de fundo do dia (petroleo, cambio global, ouro, juros americano) -
+  NAO e o WDO, e contexto.
+  macro.alinhamento_com_wdo ja aplica a polaridade calibrada pro dolar
+  (recalibrada 24/08, 25/08 e 17/09/2026): Brent sobe = CONTRARIO (Brasil
+  exportador de petroleo, BRL tende a se fortalecer); DXY sobe = FAVORAVEL;
+  Ouro sobe = FAVORAVEL e Juros EUA sobem = CONTRARIO (sinais invertidos em
+  17/09/2026 por decisao do usuario). Pode confiar no rotulo
+  "alinhado_compra"/"alinhado_venda"/"divergente" sem precisar reinterpretar
+  a polaridade.
+- casado (quando presente) e o preco justo do WDO por ARBITRAGEM contra o
+  dolar a vista: diferencial = WDO - pronto (pontos); preco_justo = pronto +
+  carrego; desvio = WDO - preco_justo. desvio > 0 = futuro rico vs a vista
+  (demanda por dolar via futuro que a vista ainda nao acompanhou); desvio
+  < 0 = a vista mais caro que o futuro justo (fluxo vendedor / exportador).
+  rotulo ja aplica o corte de z-score: "esticado" (desvio_z >= 1.5, futuro
+  muito acima do justo), "atrasado" (desvio_z <= -1.5), "neutro" no meio.
+  fonte_carrego diz se o carrego "justo" veio do historico calibrado ou so
+  da abertura de hoje (nesse caso o desvio e' so "andou desde a abertura",
+  cite com essa ressalva). idade_s alto = pronto travado, o desvio pode ser
+  so a vista correndo atras - nao trate como fluxo real. cupom_impl_pct e'
+  o cupom cambial implicito (exibicao, nao e' sinal).
 - vies_mercado (quando presente) e um consenso JA CALCULADO (nao invente o
-  seu) entre macro.alinhamento_com_win, blue_chips.vies_agregado e o proprio
-  var% do WIN - forca = quantos desses concordam (0 a 3), total_sinais =
-  quantos votaram. forca >= 2 e consenso real, cite-o e deixe seu proprio
-  "vies" refletir esse numero (nao contrarie forca alta sem uma evidencia
-  concreta e explicita da fita/livro no contexto). forca <= 1 ou
-  vies_mercado ausente = sem consenso de mercado, va so pela fita/livro e
-  diga "vies" indefinido/misto se a fita tambem nao estiver clara - NAO
-  force uma direcao so pra parecer decidido.
+  seu) entre macro.alinhamento_com_wdo, o proprio var% do WDO e o casado
+  (voto so quando esticado/atrasado) - forca = quantos desses concordam
+  (0 a 3), total_sinais = quantos votaram. forca
+  >= 2 e consenso real, cite-o e deixe seu proprio "vies" refletir esse
+  numero (nao contrarie forca alta sem uma evidencia concreta e explicita
+  da fita/livro no contexto). forca <= 1 ou vies_mercado ausente = sem
+  consenso de mercado, va so pela fita/livro e diga "vies" indefinido/misto
+  se a fita tambem nao estiver clara - NAO force uma direcao so pra parecer
+  decidido.
 - historico_similar (quando presente) e a taxa de acerto REAL, medida no
   proprio historico do sistema (nao inventada), de leituras passadas com o
   MESMO vies_mercado e forca de hoje (campo acerto_pct, sobre n casos
@@ -158,57 +176,64 @@ def disponivel() -> bool:
 
 
 def _alinhamento_macro(macro: dict, tick) -> Optional[dict]:
-    """Replica a regra do banner 'MACRO - IMPACTO NO IBOV' do dashboard
-    (dashboard_win.html, renderMacro()) para o contexto da IA nao
-    contradizer o que o trader ja ve na tela: S&P500 sobe = favoravel;
-    DXY, dolar e DI sobem = contrario ao Ibov (faixas mortas identicas
-    as do banner para nao virar ruido em sinal)."""
+    """Replica a regra do banner 'MACRO' do dashboard (dashboard_wdo.html,
+    renderMacro()) para o contexto da IA nao contradizer o que o trader ja
+    ve na tela. Polaridade recalibrada pro dolar em 24/08, 25/08 e
+    17/09/2026 (decisao do usuario, substitui a herdada do Monitor
+    WIN/Ibovespa):
+    - Brent sobe = CONTRARIO ao dolar (Brasil exportador de petroleo, BRL
+      tende a se fortalecer com o termo de troca melhor).
+    - DXY sobe = FAVORAVEL ao dolar.
+    - Ouro sobe = FAVORAVEL ao dolar (sinal INVERTIDO em 17/09/2026).
+    - Juros EUA (UST 10Y) sobem = CONTRARIO ao dolar (sinal INVERTIDO em
+      17/09/2026).
+    (faixas mortas identicas as do banner para nao virar ruido em sinal)."""
     sinais = []
-    sp500 = macro.get("sp500") or {}
-    if sp500.get("var_pct") is not None:
-        v = sp500["var_pct"]
-        sinais.append(0 if abs(v) < 0.1 else (1 if v > 0 else -1))
+    brent = macro.get("brent") or {}
+    if brent.get("var_pct") is not None:
+        v = brent["var_pct"]
+        sinais.append(0 if abs(v) < 0.1 else (1 if v < 0 else -1))
     dxy = macro.get("dxy") or {}
     if dxy.get("var_pct") is not None:
         v = dxy["var_pct"]
-        sinais.append(0 if abs(v) < 0.1 else (1 if v < 0 else -1))
-    dolar = macro.get("dolar") or {}
-    if dolar.get("var_pct") is not None:
-        v = dolar["var_pct"]
-        sinais.append(0 if abs(v) < 0.05 else (1 if v < 0 else -1))
-    di = macro.get("di") or {}
-    if di.get("var_bps") is not None:
-        v = di["var_bps"]
+        sinais.append(0 if abs(v) < 0.1 else (1 if v > 0 else -1))
+    ouro = macro.get("ouro") or {}
+    if ouro.get("var_pct") is not None:
+        v = ouro["var_pct"]
+        sinais.append(0 if abs(v) < 0.1 else (1 if v > 0 else -1))
+    juros_us = macro.get("juros_us") or {}
+    if juros_us.get("var_bps") is not None:
+        v = juros_us["var_bps"]
         sinais.append(0 if abs(v) < 1 else (1 if v < 0 else -1))
     if not sinais:
         return None
     fav = sum(1 for s in sinais if s > 0)
     con = sum(1 for s in sinais if s < 0)
     macro_dir = 1 if fav > con else (-1 if con > fav else 0)
-    win_var = None
+    wdo_var = None
     if tick and tick.ultimo:
         base = tick.fec_ant or tick.abertura
         if base:
-            win_var = (tick.ultimo / base - 1) * 100
-    win_dir = 0
-    if win_var is not None:
-        win_dir = 1 if win_var > 0.05 else (-1 if win_var < -0.05 else 0)
-    if macro_dir == 0 or win_dir == 0:
+            wdo_var = (tick.ultimo / base - 1) * 100
+    wdo_dir = 0
+    if wdo_var is not None:
+        wdo_dir = 1 if wdo_var > 0.05 else (-1 if wdo_var < -0.05 else 0)
+    if macro_dir == 0 or wdo_dir == 0:
         direcao = "misto"
-    elif macro_dir == win_dir:
+    elif macro_dir == wdo_dir:
         direcao = "alinhado_compra" if macro_dir > 0 else "alinhado_venda"
     else:
         direcao = "divergente"
     return {"direcao": direcao, "favoraveis": fav, "contrarios": con,
-            "win_var_pct": round(win_var, 2) if win_var is not None else None}
+            "wdo_var_pct": round(wdo_var, 2) if wdo_var is not None else None}
 
 
 def vies_consolidado(alinhamento: Optional[dict],
-                      blue_chips: Optional[dict]) -> Optional[dict]:
+                     casado: Optional[dict] = None) -> Optional[dict]:
     """Viés de mercado CALCULADO (nao pelo modelo): concordancia entre o
-    pano de fundo macro (`alinhamento_com_win`, ja calculado por
-    `_alinhamento_macro`), as blue chips (proxy do Ibovespa) e o proprio
-    movimento do WIN no dia (embutido no `alinhamento`, campo win_var_pct).
+    pano de fundo macro (`alinhamento_com_wdo`, ja calculado por
+    `_alinhamento_macro`) e o proprio movimento do WDO no dia (embutido no
+    `alinhamento`, campo wdo_var_pct).
 
     Isso da pra IA um numero pronto em vez de pedir pra ela "sentir" o
     consenso a cada chamada (mais assertivo/consistente entre leituras) e
@@ -216,23 +241,24 @@ def vies_consolidado(alinhamento: Optional[dict],
     pra logar em `leituras` e medir taxa de acerto sozinho
     (`backtest_confluencia.py`).
 
-    votos: +1 macro alinhado com compra / blue chips compra / WIN subindo,
+    votos: +1 macro alinhado com compra / WDO subindo / casado esticado,
            -1 o espelho. Sinais "misto"/"neutro"/ausentes nao votam.
+           (O Monitor WIN somava um 3o voto de blue chips - aqui a 3a vaga
+           e' do casado, que so vota quando o desvio esta claramente
+           esticado/atrasado; ver casado_wdo.voto_vies.)
     """
     votos = []
     if alinhamento and alinhamento["direcao"] in ("alinhado_compra", "alinhado_venda"):
         votos.append(1 if alinhamento["direcao"] == "alinhado_compra" else -1)
-    bc_vies = (blue_chips or {}).get("vies")
-    if bc_vies == "compra":
-        votos.append(1)
-    elif bc_vies == "venda":
-        votos.append(-1)
-    win_var = alinhamento.get("win_var_pct") if alinhamento else None
-    if win_var is not None:
-        if win_var > 0.05:
+    wdo_var = alinhamento.get("wdo_var_pct") if alinhamento else None
+    if wdo_var is not None:
+        if wdo_var > 0.05:
             votos.append(1)
-        elif win_var < -0.05:
+        elif wdo_var < -0.05:
             votos.append(-1)
+    voto_casado = casado_wdo.voto_vies(casado)
+    if voto_casado is not None:
+        votos.append(voto_casado)
     if not votos:
         return None
     compra, venda = votos.count(1), votos.count(-1)
@@ -245,8 +271,8 @@ def vies_consolidado(alinhamento: Optional[dict],
     return {
         "vies": vies, "forca": forca, "total_sinais": len(votos),
         "macro": alinhamento["direcao"] if alinhamento else None,
-        "blue_chips": bc_vies,
-        "win_var_pct": win_var,
+        "wdo_var_pct": wdo_var,
+        "casado": (casado.get("rotulo") if voto_casado is not None else None),
     }
 
 
@@ -254,7 +280,7 @@ def montar_contexto(tick, fluxo: Optional[dict], ranking_dados: dict,
                      niveis: dict, eventos_hoje: list,
                      ohlc_hoje: Optional[dict],
                      macro: Optional[dict] = None,
-                     blue_chips: Optional[dict] = None) -> dict:
+                     casado: Optional[dict] = None) -> dict:
     """Resume o estado atual do monitor num JSON compacto - so o que o
     modelo precisa, para nao gastar tokens/cota a toa."""
     ctx: dict = {"hora": time.strftime("%H:%M:%S")}
@@ -271,6 +297,7 @@ def montar_contexto(tick, fluxo: Optional[dict], ranking_dados: dict,
     if ranking_dados and ranking_dados.get("corretoras"):
         ctx["ranking"] = {
             "top5": ranking_dados["corretoras"][:5],
+            "top5_janela": ranking_dados.get("corretoras_janela", [])[:5],
             "ciclos_perdidos": ranking_dados.get("ciclos_perdidos", 0),
         }
     if niveis:
@@ -289,27 +316,19 @@ def montar_contexto(tick, fluxo: Optional[dict], ranking_dados: dict,
     alinhamento = None
     if macro:
         ctx["macro"] = {
-            "sp500_var_pct": (macro.get("sp500") or {}).get("var_pct"),
+            "brent_var_pct": (macro.get("brent") or {}).get("var_pct"),
             "dxy_var_pct": (macro.get("dxy") or {}).get("var_pct"),
-            "dolar_var_pct": (macro.get("dolar") or {}).get("var_pct"),
-            "di_var_bps": (macro.get("di") or {}).get("var_bps"),
-            "di_desatualizado": (macro.get("di") or {}).get("desatualizado"),
+            "ouro_var_pct": (macro.get("ouro") or {}).get("var_pct"),
+            "juros_us_var_bps": (macro.get("juros_us") or {}).get("var_bps"),
         }
         alinhamento = _alinhamento_macro(macro, tick)
         if alinhamento:
-            ctx["macro"]["alinhamento_com_win"] = alinhamento
-    if blue_chips and blue_chips.get("ativos"):
-        ctx["blue_chips"] = {
-            "vies_agregado": blue_chips.get("vies"),
-            "positivas": blue_chips.get("positivas"),
-            "negativas": blue_chips.get("negativas"),
-            "ativos": [
-                {"ticker": a["ticker"], "var_pct": a.get("var_pct"),
-                 "fluxo": a.get("fluxo"), "peso_ibov": a.get("peso_ibov")}
-                for a in blue_chips["ativos"]
-            ],
-        }
-    vm = vies_consolidado(alinhamento, blue_chips)
+            ctx["macro"]["alinhamento_com_wdo"] = alinhamento
+    if casado:
+        ctx["casado"] = {k: casado.get(k) for k in (
+            "diferencial", "preco_justo", "desvio", "desvio_z", "rotulo",
+            "du", "cupom_impl_pct", "idade_s", "fonte_carrego") if k in casado}
+    vm = vies_consolidado(alinhamento, casado)
     if vm:
         ctx["vies_mercado"] = vm
     return ctx
@@ -373,7 +392,7 @@ def gerar_leitura(contexto: dict, forcar: bool = False) -> dict:
     payload = {
         "model": GEMINI_MODEL,
         "system_instruction": SYSTEM_PROMPT,
-        "input": ("Contexto atual do WIN (JSON):\n"
+        "input": ("Contexto atual do WDO (JSON):\n"
                  + json.dumps(contexto, ensure_ascii=False)),
         "response_format": {
             "type": "text",

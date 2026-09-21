@@ -1,17 +1,22 @@
 """
 ================================================================
- MONITOR WIN - server_win.py
- Sistema independente de monitoramento do Mini Indice (WINFUT)
+ MONITOR WDO - server_wdo.py
+ Sistema independente de monitoramento do Dolar Futuro (DOLFUT)
 ----------------------------------------------------------------
- Pipeline : Profit Pro RTD -> Excel (VBA) -> dados_win.csv
+ Fork do Monitor WIN (server_win.py) - mesma arquitetura, ativo trocado.
+ Pipeline : Profit Pro RTD -> Excel (VBA) -> dados_wdo.csv
             -> este servidor (FastAPI) -> WebSocket -> dashboard
- Extra    : macro (S&P 500 ES=F via Yahoo; DI futuro + DOLFUT via
-            RTD/Excel em dados_macro_rtd.csv, dolar Yahoo como fallback)
-            -> card MACRO do dashboard
- Porta    : 8001 (roda em paralelo com o server do WDO na 8000)
- Executar : python server_win.py
+ Extra    : macro (Brent BZ=F via Yahoo - trocado do S&P 500 do WIN em
+            24/08/2026, correlaciona melhor com o dolar de pais exportador
+            de commodity; Ouro GC=F e Juros EUA ^TNX via Yahoo, trocados em
+            25/08/2026 no lugar do Dolar/DI redundantes - ver nota completa
+            em MACRO_SYMBOLS abaixo) -> card MACRO do dashboard.
+ Porta    : 8003 (roda em paralelo com o Monitor WIN na 8001 e com o
+            sistema antigo "Mapa de Tendencia WDO" na 8000)
+ Executar : python server_wdo.py
 ================================================================
-Boas praticas aplicadas (diferencas vs. server_v2.py do WDO):
+Boas praticas aplicadas (heranca do server_win.py, que por sua vez
+diferia do server_v2.py do sistema antigo "Mapa de Tendencia WDO"):
   1. Lifespan pattern (sem @app.on_event deprecated)
   2. Snapshot SQLite via run_in_executor (nao bloqueia o loop async)
   3. Niveis desacoplados em niveis.json + endpoints GET/POST /niveis
@@ -27,7 +32,7 @@ import statistics
 import sys
 import time
 from collections import deque
-from datetime import date
+from datetime import date, timedelta
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict
 from pathlib import Path
@@ -46,32 +51,34 @@ if sys.platform == "win32":
     from asyncio.proactor_events import _ProactorBasePipeTransport
     _ProactorBasePipeTransport._call_connection_lost = lambda self, exc=None: None
 
-import agente_win     # leitura de fluxo por IA (Google Gemini) - consumidor, nao fonte
+import agente_wdo     # leitura de fluxo por IA (Google Gemini) - consumidor, nao fonte
+import casado_wdo     # preco justo do WDO vs dolar a vista (o "casado")
 
 # ----------------------------------------------------------------
 # CONFIGURACAO
 # ----------------------------------------------------------------
 BASE_DIR      = Path(__file__).parent
-# 2026-07-22: ponte encerrada. O VBA (Modulo1 + ModuloBlueChips) foi repontuado
-# de Apps\monitor_win para Day trade\monitor_win, entao os CSVs de entrada voltam
-# a ser lidos daqui (BASE_DIR), projeto todo numa pasta so.
 DATA_DIR      = BASE_DIR
-CSV_PATH      = DATA_DIR / "dados_win.csv"       # gerado pelo VBA (ExportarWIN)
-BLUE_CHIPS_CSV = DATA_DIR / "dados_blue_chips.csv"  # gerado pelo VBA (ExportarBlueChips)
-BOOK_CSV      = DATA_DIR / "dados_book.csv"      # livro de ofertas (BOOK0)
-TT_CSV        = DATA_DIR / "dados_tt.csv"        # fita / Times & Trades (T&T0)
-VAP_CSV       = DATA_DIR / "dados_vap.csv"       # volume por preco (VAP0)
-RANKING_CSV   = DATA_DIR / "ranking_acum.csv"    # acumulado p/ a aba Acum (VBA le)
+CSV_PATH      = DATA_DIR / "dados_wdo.csv"       # gerado pelo VBA (ExportarWDO)
+BOOK_CSV      = DATA_DIR / "dados_book.csv"      # livro de ofertas (BOOK1)
+TT_CSV        = DATA_DIR / "dados_tt.csv"        # fita / Times & Trades (T&T1)
+VAP_CSV       = DATA_DIR / "dados_vap.csv"       # volume por preco (VAP1)
+RANKING_CSV   = DATA_DIR / "ranking_acum.csv"    # acumulado p/ a aba AcumWDO (VBA le)
 NIVEIS_PATH   = BASE_DIR / "niveis.json"         # niveis do dia (editavel)
-DB_PATH       = BASE_DIR / "win_history.db"
-DASHBOARD     = BASE_DIR / "dashboard_win.html"
+DB_PATH       = BASE_DIR / "wdo_history.db"
+DASHBOARD     = BASE_DIR / "dashboard_wdo.html"
 POLL_INTERVAL = 1.0        # segundos entre leituras do CSV
 LEITURA_AUTO_INTERVALO = 900   # segundos entre leituras de IA periodicas (15 min) -
-                               # subiu de 3 p/ 15 min ao incluir macro+blue_chips no
-                               # contexto (prompt maior, poupa cota do nivel gratuito)
+                               # subiu de 3 p/ 15 min ao incluir macro no contexto
+                               # (prompt maior, poupa cota do nivel gratuito)
+JANELA_CORRETORAS_S = 30 * 60   # janela movel do ranking (quem agride AGORA,
+                                # nao so o acumulado desde a abertura)
+SERIE_CORRETORAS_S  = 60        # cadencia dos snapshots da serie temporal
+                                # (corretoras_serie) - granularidade pro
+                                # backtest de "quem virou de lado" depois do pregao
 SNAPSHOT_EVERY = 2         # segundos entre snapshots no SQLite (resolucao
-                           # do perfil de volume; ~12k linhas/dia no WIN)
-HOST, PORT    = "127.0.0.1", 8001
+                           # do perfil de volume)
+HOST, PORT    = "127.0.0.1", 8003
 
 # Cobertura minima para um pregao virar base de pivots: o server tem que ter
 # pego a abertura e o fechamento. Fora disso, H/L sao parciais e os pivots do
@@ -79,29 +86,61 @@ HOST, PORT    = "127.0.0.1", 8001
 PREGAO_ABERTURA_ATE = "10:00"    # primeiro tick tem que vir antes disso
 PREGAO_FECHA_APOS   = "17:45"    # ultimo tick tem que vir depois disso
 
-# Peso aproximado de cada blue chip no IBOV (atualizar periodicamente -
-# nao ha fonte RTD para isso, e um dado de composicao do indice).
-PESO_IBOV = {
-    "VALE3": 11.2, "PETR4": 7.8, "ITUB4": 6.5, "BBDC4": 3.1, "BBAS3": 2.4,
-}
-
-# --- Macro (S&P 500, Dolar, DI) ---------------------------------------
-# S&P 500 e Dolar: Yahoo Finance. O S&P e o driver global de risco que
-# mais move o IBOV (correlacao positiva); usamos o E-mini futuro ES=F
-# porque negocia quase 24h — o indice a vista (^GSPC) fica parado antes
-# da abertura de NY. DI futuro: nao existe no Yahoo; vem do Profit via
-# RTD/Excel em dados_macro_rtd.csv (ver ExportarWIN.bas).
+# --- Macro (Brent, Ouro, DXY, Juros EUA) --------------------------------
+# Brent: Yahoo Finance. Em 24/08/2026 trocado o S&P 500 (driver de risco
+# global, herdado do Monitor WIN) por BRENT (BZ=F): Brasil e exportador de
+# petroleo (Petrobras), entao o termo de troca move o cambio - Brent sobe
+# -> BRL tende a se fortalecer -> DOLFUT tende a CAIR (por isso a
+# polaridade do selo do dashboard e' invertida pro Brent: alta = seta
+# vermelha/contrario ao dolar, baixa = seta verde/favoravel). DXY continua
+# como termometro de risco global.
+#
+# Em 25/08/2026, os dois cards redundantes/RTD foram trocados por
+# commodities/juros globais que correlacionam melhor com o DOLFUT
+# (decisao do usuario):
+#   - "Dolar" (USD/BRL via Yahoo, proxy do proprio DOLFUT em tempo real
+#     via RTD) -> OURO (GC=F). Ouro e cotado em USD e historicamente se
+#     move de forma INVERSA a forca global do dolar (ouro sobe quando o
+#     dolar enfraquece no mundo, e vice-versa). Em 17/09/2026 o usuario
+#     INVERTEU o sinal desse card: agora ouro SOBE = seta verde/favoravel
+#     ao DOLFUT, ouro CAI = seta vermelha/contraria (ver renderMacro() no
+#     dashboard_wdo.html e _alinhamento_macro() no agente_wdo.py).
+#   - "Juros DI" (DI futuro via RTD/Excel, juro domestico) -> JUROS EUA
+#     (^TNX, treasury de 10 anos via Yahoo). Juro americano mais alto
+#     atrai capital para os EUA e tende a fortalecer o dolar globalmente,
+#     mas em 17/09/2026 o usuario INVERTEU o sinal desse card: agora juro
+#     EUA SOBE = seta vermelha/contraria ao DOLFUT, cai = seta
+#     verde/favoravel (ver renderMacro() e _alinhamento_macro()). Isso tambem
+#     tira a dependencia do RTD/Excel (dados_macro_rtd.csv, exportado pelo
+#     ExportarWDO.bas) para o card MACRO - o CSV continua sendo gerado
+#     pela planilha mas nao e' mais lido por este servidor.
 YAHOO_CHART   = ("https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                  "?range=1d&interval=15m")
 MACRO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 MACRO_POLL    = 30                            # segundos entre consultas
-# DXY = dolar global (indice ICE contra cesta de moedas). Correlacao
-# diaria com o IBOV (-0,36 em 1 ano) mais forte que a do USD/BRL e quase
-# independente dele (r~0,18) — carrega o "fluxo p/ emergentes" que o
-# cambio BRL sozinho nao mostra. DXY sobe -> IBOV tende a cair.
-MACRO_SYMBOLS = {"sp500": "ES=F", "dxy": "DX-Y.NYB", "dolar": "USDBRL=X"}
-MACRO_RTD_CSV = DATA_DIR / "dados_macro_rtd.csv"  # VBA (ExportarMacroRTD) - ver PONTE acima
-RTD_MAX_AGE   = 180                           # s sem update = desatualizado
+# DXY = dolar global (indice ICE contra cesta de moedas). Herdado do
+# Monitor WIN, onde a correlacao (-0,36/ano) e com o IBOV; contra o
+# proprio USD/BRL (DOLFUT aqui) a relacao e POSITIVA na maior parte do
+# tempo (DXY sobe -> dolar tende a subir tambem, mesmo "fluxo p/
+# emergentes"). O card MACRO nao foi recalibrado para essa polaridade -
+# ver ressalva no README.
+MACRO_SYMBOLS = {"brent": "BZ=F", "dxy": "DX-Y.NYB", "ouro": "GC=F",
+                  "juros_us": "^TNX"}
+
+# --- CASADO: preco justo do WDO vs dolar a vista (Caminho A, 27/08/2026) --
+# dolar a vista (dolar comercial): AwesomeAPI, sem chave, cache de ~1 min.
+# Fallback: Yahoo BRL=X (mesmo padrao dos simbolos macro). Ver casado_wdo.py.
+SPOT_URL_AWESOME = "https://economia.awesomeapi.com.br/json/last/USD-BRL"
+SPOT_SYM_YAHOO   = "BRL=X"
+# dados_macro_rtd.csv (DI1*/DOLFUT via RTD/Excel): parou de alimentar o card
+# MACRO em 25/08, mas VOLTOU a ser lido aqui (so o DI) para decompor o
+# carrego bruto e estimar o cupom cambial implicito no card CASADO. O card
+# MACRO continua 100% Yahoo. Se o arquivo estiver velho/ausente, o casado
+# funciona sem o cupom implicito (campo fica nulo).
+MACRO_RTD_CSV = DATA_DIR / "dados_macro_rtd.csv"
+# Letras de mes dos codigos B3 (DI1F28 = Jan/2028).
+_MES_COD_B3 = {"F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6,
+               "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12}
 
 
 # ----------------------------------------------------------------
@@ -455,16 +494,24 @@ class RankingCorretoras:
     Mesma ressalva da nota na planilha: corretora agressora nao e posicao —
     XP vendendo 10k pode ser 200 clientes; o valor esta em ler dominancia e
     troca de mao (ex.: institucional entrando onde so havia varejo).
+
+    Alem do acumulado do dia, mantem uma JANELA MOVEL (JANELA_CORRETORAS_S)
+    via deque de eventos: o acumulado do dia inteiro reflete sobretudo a
+    manha e fica lento pra mostrar quem esta agredindo AGORA; a janela
+    responde isso, ao custo de ser mais ruidosa (um lote institucional
+    grande pode virar o saldo da janela rapido). As duas se complementam.
     """
 
     def __init__(self):
         self.dia = date.today().isoformat()
-        self._dados: dict = {}               # corretora -> metricas
+        self._dados: dict = {}               # corretora -> metricas (dia)
+        self._janela: dict = {}              # corretora -> metricas (janela movel)
+        self._eventos: deque = deque()       # (ts, comprador, vendedor, qtd, fin)
         self.negocios_perdidos = 0           # ciclos com janela_perdida
         self._csv_bloqueado_desde: Optional[float] = None
 
-    def _slot(self, nome: str) -> dict:
-        return self._dados.setdefault(nome, {
+    def _slot(self, dados: dict, nome: str) -> dict:
+        return dados.setdefault(nome, {
             "qtd_compra": 0.0, "qtd_venda": 0.0,
             "fin_compra": 0.0, "fin_venda": 0.0, "negocios": 0})
 
@@ -472,27 +519,59 @@ class RankingCorretoras:
         hoje = date.today().isoformat()
         if hoje != self.dia:                 # virada de pregao zera o dia
             self.dia, self._dados = hoje, {}
+            self._janela, self._eventos = {}, deque()
             self.negocios_perdidos = 0
         if janela_perdida:
             self.negocios_perdidos += 1
+        agora = time.time()
         for n in novos:
             fin = n["qtd"] * n["preco"]
-            c = self._slot(n["comprador"])
+            c = self._slot(self._dados, n["comprador"])
             c["qtd_compra"] += n["qtd"]
             c["fin_compra"] += fin
             c["negocios"] += 1
-            v = self._slot(n["vendedor"])
+            v = self._slot(self._dados, n["vendedor"])
             v["qtd_venda"] += n["qtd"]
             v["fin_venda"] += fin
             v["negocios"] += 1
 
-    def ranking(self) -> list:
-        """Corretoras por saldo (compra - venda), maior comprador primeiro."""
+            jc = self._slot(self._janela, n["comprador"])
+            jc["qtd_compra"] += n["qtd"]
+            jc["fin_compra"] += fin
+            jc["negocios"] += 1
+            jv = self._slot(self._janela, n["vendedor"])
+            jv["qtd_venda"] += n["qtd"]
+            jv["fin_venda"] += fin
+            jv["negocios"] += 1
+            self._eventos.append((agora, n["comprador"], n["vendedor"], n["qtd"], fin))
+        self._podar_janela(agora)
+
+    def _podar_janela(self, agora: float):
+        """Remove da janela movel os eventos mais antigos que JANELA_CORRETORAS_S,
+        descontando o que eles somaram (incremental - nunca reprocessa tudo)."""
+        limite = agora - JANELA_CORRETORAS_S
+        while self._eventos and self._eventos[0][0] < limite:
+            _, comprador, vendedor, qtd, fin = self._eventos.popleft()
+            jc = self._janela.get(comprador)
+            if jc:
+                jc["qtd_compra"] -= qtd
+                jc["fin_compra"] -= fin
+                jc["negocios"] -= 1
+            jv = self._janela.get(vendedor)
+            if jv:
+                jv["qtd_venda"] -= qtd
+                jv["fin_venda"] -= fin
+                jv["negocios"] -= 1
+
+    @staticmethod
+    def _montar_ranking(dados: dict) -> list:
         total = sum(d["qtd_compra"] + d["qtd_venda"]
-                    for d in self._dados.values()) or 1.0
+                    for d in dados.values()) or 1.0
         out = []
-        for nome, d in self._dados.items():
+        for nome, d in dados.items():
             qtd_total = d["qtd_compra"] + d["qtd_venda"]
+            if qtd_total <= 0:            # zerou pela poda da janela - nao exibe
+                continue
             fin_total = d["fin_compra"] + d["fin_venda"]
             out.append({
                 "corretora": nome,
@@ -505,9 +584,29 @@ class RankingCorretoras:
         out.sort(key=lambda x: x["saldo"], reverse=True)
         return out
 
+    def ranking(self) -> list:
+        """Corretoras por saldo (compra - venda) DESDE A ABERTURA, maior comprador primeiro."""
+        return self._montar_ranking(self._dados)
+
+    def ranking_janela(self) -> list:
+        """Corretoras por saldo dentro dos ultimos JANELA_CORRETORAS_S segundos -
+        quem esta agredindo AGORA, nao desde a abertura."""
+        self._podar_janela(time.time())
+        return self._montar_ranking(self._janela)
+
     def snapshot_db(self) -> list:
         """Linhas para o upsert no SQLite (valores absolutos do dia)."""
         return [(self.dia, nome, d["qtd_compra"], d["qtd_venda"],
+                 d["fin_compra"], d["fin_venda"], d["negocios"])
+                for nome, d in self._dados.items()]
+
+    def snapshot_serie(self, ts: str) -> list:
+        """Linhas para o INSERT na serie temporal (corretoras_serie): um ponto
+        no tempo do acumulado CUMULATIVO do dia por corretora. Guardar o
+        cumulativo (nao a janela ja calculada) deixa reconstruir depois
+        qualquer janela por diferenca entre dois pontos - nao fica presa ao
+        tamanho de JANELA_CORRETORAS_S vigente no momento da gravacao."""
+        return [(self.dia, ts, nome, d["qtd_compra"], d["qtd_venda"],
                  d["fin_compra"], d["fin_venda"], d["negocios"])
                 for nome, d in self._dados.items()]
 
@@ -541,7 +640,7 @@ class RankingCorretoras:
                 tmp.replace(path)             # troca atomica (VBA nunca le pela metade)
                 if self._csv_bloqueado_desde is not None:
                     dur = time.time() - self._csv_bloqueado_desde
-                    print(f"[WIN] ranking_acum.csv liberado (ficou {dur:.0f}s bloqueado)")
+                    print(f"[WDO] ranking_acum.csv liberado (ficou {dur:.0f}s bloqueado)")
                     self._csv_bloqueado_desde = None
                 return
             except PermissionError:
@@ -549,7 +648,7 @@ class RankingCorretoras:
                     time.sleep(espera_s * (2 ** tentativa))
         if self._csv_bloqueado_desde is None:
             self._csv_bloqueado_desde = time.time()
-            print("[WIN] ranking_acum.csv bloqueado por outro processo - "
+            print("[WDO] ranking_acum.csv bloqueado por outro processo - "
                   "confira se nao esta aberto no Excel/Bloco de notas")
         tmp.unlink(missing_ok=True)
 
@@ -565,78 +664,10 @@ class RankingCorretoras:
 
 
 # ----------------------------------------------------------------
-# LEITOR DO CSV DE BLUE CHIPS (fluxo das acoes que compoem o IBOV)
-# ----------------------------------------------------------------
-class BlueChipsReader:
-    """Le dados_blue_chips.csv (gerado por ExportarBlueChips.bas) e
-    classifica o fluxo de cada ativo pela variacao de preco vs. fechamento
-    anterior (Var%). Antes usava a dominancia de agressao (agr_compra vs
-    agr_venda), mas isso podia divergir do preco (ex.: preco caindo no dia
-    porem com mais volume agressor comprador acumulado), o que confundia
-    o painel - a cor/seta do Fluxo agora bate sempre com o sinal do Var%.
-
-    Formato esperado (separador ';', 1 linha por ativo):
-    ticker;ultimo;abertura;maxima;minima;fec_ant;agr_compra;agr_venda;vwap;volume;timestamp
-    """
-
-    FIELDS = ["ticker", "ultimo", "abertura", "maxima", "minima", "fec_ant",
-              "agr_compra", "agr_venda", "vwap", "volume", "timestamp"]
-    VAR_MIN = 0.1   # % de variacao abaixo disso = "neutro" (ruido)
-
-    def __init__(self, path: Path, alt_paths: tuple = ()):
-        # Le do arquivo MAIS RECENTE entre os candidatos. Blindagem 22/07: o
-        # macro ModuloBlueChips pode estar gravando na pasta antiga (Apps) ou na
-        # nova (Day trade) dependendo de qual loop OnTime esta vivo; seguir o
-        # mais fresco faz o painel funcionar nos dois casos e se auto-corrige
-        # sozinho quando o Excel reiniciar com o caminho certo compilado.
-        self.paths = [p for p in (path, *alt_paths) if p]
-        self._last_mtime = 0.0
-
-    def _fresh_path(self) -> Optional[Path]:
-        cand = [(p.stat().st_mtime, p) for p in self.paths if p.exists()]
-        return max(cand, key=lambda t: t[0])[1] if cand else None
-
-    def read_if_changed(self) -> Optional[list[dict]]:
-        path = self._fresh_path()
-        if path is None:
-            return None
-        mtime = path.stat().st_mtime
-        if mtime == self._last_mtime:
-            return None
-        self._last_mtime = mtime
-        try:
-            with open(path, encoding="utf-8-sig", errors="ignore") as f:
-                rows = [r for r in csv.reader(f, delimiter=";") if r]
-        except PermissionError:
-            return None                      # Excel escrevendo no arquivo
-        out = []
-        for row in rows[1:]:                 # pula cabecalho
-            if len(row) < len(self.FIELDS) or not row[0]:
-                continue
-            d = dict(zip(self.FIELDS, row))
-            ultimo = _to_float(d["ultimo"])
-            fec = _to_float(d["fec_ant"])
-            var_pct = ((ultimo - fec) / fec * 100) if (ultimo and fec) else None
-            fluxo = "neutro"
-            if var_pct is not None and abs(var_pct) > self.VAR_MIN:
-                fluxo = "compra" if var_pct > 0 else "venda"
-            # x6 so a barra (0-18px no dashboard) fique legivel com variacoes
-            # tipicas de blue chips (~0-3%), que antes eram % de dominancia
-            # de agressao (0-100) e usavam a escala crua.
-            dominancia = abs(var_pct) * 6 if var_pct is not None else 0.0
-            out.append({
-                "ticker": d["ticker"], "ultimo": ultimo, "var_pct": var_pct,
-                "peso_ibov": PESO_IBOV.get(d["ticker"]), "fluxo": fluxo,
-                "dominancia": round(dominancia, 1),
-            })
-        return out or None
-
-
-# ----------------------------------------------------------------
-# MACRO: S&P 500 + DOLAR (Yahoo) e DI FUTURO (RTD via CSV)
+# MACRO: BRENT + OURO + DXY (Yahoo) e JUROS EUA (Yahoo)
 # ----------------------------------------------------------------
 class MacroFetcher:
-    """Busca S&P 500 e Dolar no Yahoo Finance.
+    """Busca Brent, Ouro, DXY e Juros EUA (^TNX) no Yahoo Finance.
 
     Fonte unica e isolada aqui (mesmo desenho do BrentFetcher do PETR4):
     para trocar a fonte, basta reimplementar fetch_symbol().
@@ -662,6 +693,10 @@ class MacroFetcher:
                 "preco": round(float(preco), 4),
                 "fech_ant": round(float(prev), 4),
                 "var_pct": round((float(preco) / float(prev) - 1) * 100, 2),
+                # diferenca em pontos-base (usado pelo juros_us, que e' uma
+                # taxa - variacao percentual do valor da taxa nao faz
+                # sentido pra ela; ignorado pelos demais simbolos)
+                "var_bps": round((float(preco) - float(prev)) * 100, 1),
                 "ts": time.strftime("%H:%M:%S"),
             }
         except Exception:
@@ -676,65 +711,116 @@ class MacroFetcher:
         return self.last
 
 
-class RtdMacroReader:
-    """Le dados_macro_rtd.csv exportado pelo VBA (DI futuros + DOLFUT).
+# ----------------------------------------------------------------
+# DOLAR A VISTA (spot) para o CASADO
+# ----------------------------------------------------------------
+class SpotFetcher:
+    """Dolar comercial a vista: AwesomeAPI (sem chave) com fallback pro
+    Yahoo BRL=X. Mesmo desenho do MacroFetcher: mantem a ultima cotacao
+    valida e o instante dela (last_ok) - o card CASADO mostra a idade
+    porque spot travado vira desvio falso (a vista correndo atras do
+    futuro, nao fluxo).
+    """
 
-    Formato esperado (separador ';', 1 linha por ativo):
-    ticker;ultimo;fec_ant;volume;timestamp
+    def __init__(self):
+        self.last: Optional[dict] = None
+        self.last_ok: float = 0.0
 
-    DI: o VBA exporta TODOS os DI1* da planilha; aqui vence o de maior
-    volume (contrato mais liquido = referencia do juro futuro; a escolha
-    acompanha a rolagem sem mexer em codigo). Taxa em % a.a.;
-    variacao em bps = (ultimo - fec_ant) x 100.
+    async def fetch(self, client: httpx.AsyncClient) -> Optional[dict]:
+        q = await self._awesome(client) or await self._yahoo(client)
+        if q:
+            self.last = q
+            self.last_ok = time.time()
+        return self.last
 
-    DOLFUT: cotado em pontos B3 (R$ por US$1000) -> /1000 = R$/US$.
-    Tempo real do pregao, preferido ao spot do Yahoo (fallback).
+    async def _awesome(self, client: httpx.AsyncClient) -> Optional[dict]:
+        try:
+            r = await client.get(SPOT_URL_AWESOME, headers=MACRO_HEADERS, timeout=10)
+            r.raise_for_status()
+            d = r.json()["USDBRL"]
+            bid, ask = float(d["bid"]), float(d["ask"])
+            mid = (bid + ask) / 2
+            return {
+                "rate": round(mid, 4),
+                "bid": bid, "ask": ask,
+                "var_pct": round(float(d.get("pctChange") or 0.0), 2),
+                "fonte": "AwesomeAPI",
+                "ts": d.get("create_date", "")[-8:],
+            }
+        except Exception:
+            return None
+
+    async def _yahoo(self, client: httpx.AsyncClient) -> Optional[dict]:
+        try:
+            r = await client.get(YAHOO_CHART.format(sym=SPOT_SYM_YAHOO),
+                                 headers=MACRO_HEADERS, timeout=10)
+            r.raise_for_status()
+            meta = r.json()["chart"]["result"][0]["meta"]
+            preco = meta.get("regularMarketPrice")
+            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+            if preco is None or not prev:
+                return None
+            return {
+                "rate": round(float(preco), 4),
+                "bid": None, "ask": None,
+                "var_pct": round((float(preco) / float(prev) - 1) * 100, 2),
+                "fonte": "Yahoo BRL=X",
+                "ts": time.strftime("%H:%M:%S"),
+            }
+        except Exception:
+            return None
+
+
+class MacroRtdReader:
+    """Le o DI curto de dados_macro_rtd.csv (DI1*/DOLFUT via RTD/Excel).
+
+    Cache por mtime (mesmo padrao do CsvReader). So o DI interessa aqui -
+    o card MACRO nao depende mais deste arquivo. Escolhe o contrato DI1 de
+    menor vencimento futuro como proxy do juro domestico ate o vencimento
+    do WDO (tenor curto, a curva quase nao inclina nesse trecho).
     """
 
     def __init__(self, path: Path):
         self.path = path
+        self._mtime = 0.0
+        self._di_anual: Optional[float] = None
+        self._di_ticker: Optional[str] = None
 
-    def read(self) -> dict:
-        if not self.path.exists():
-            return {}
+    def _venc_di(self, tk: str) -> Optional[date]:
         try:
-            idade = time.time() - self.path.stat().st_mtime
+            mes = _MES_COD_B3.get(tk[3].upper())
+            ano = 2000 + int(tk[4:6])
+            return date(ano, mes, 1) if mes else None
+        except (ValueError, IndexError):
+            return None
+
+    def di_anual(self) -> Optional[float]:
+        """Taxa DI curta em fracao (0.1389). None se o arquivo sumiu."""
+        if not self.path.exists():
+            return None
+        mtime = self.path.stat().st_mtime
+        if mtime == self._mtime:
+            return self._di_anual
+        self._mtime = mtime
+        try:
             with open(self.path, encoding="utf-8-sig", errors="ignore") as f:
-                rows = [r for r in csv.reader(f, delimiter=";") if r]
-        except PermissionError:
-            return {}                        # Excel escrevendo no arquivo
-        stale = idade > RTD_MAX_AGE
-        out: dict = {}
-        best_di = None
-        for row in rows[1:]:                 # pula cabecalho
-            if len(row) < 4:
+                rows = list(csv.reader(f, delimiter=";"))
+        except (PermissionError, OSError):
+            return self._di_anual
+        hoje = date.today()
+        melhor: tuple = (None, None)     # (venc, taxa)
+        for row in rows:
+            if len(row) < 2 or not row[0].upper().startswith("DI1"):
                 continue
-            tk = row[0].strip()
-            ultimo = _to_float(row[1])
-            fec    = _to_float(row[2])
-            vol    = _to_float(row[3]) or 0.0
-            ts     = row[4] if len(row) > 4 else ""
-            if ultimo is None:
+            venc = self._venc_di(row[0].strip())
+            taxa = _to_float(row[1])
+            if venc is None or taxa is None or venc <= hoje:
                 continue
-            if tk.startswith("DI1"):
-                if best_di is None or vol > best_di["_vol"]:
-                    best_di = {
-                        "ticker": tk, "taxa": ultimo, "fec_ant": fec,
-                        "var_bps": round((ultimo - fec) * 100, 1) if fec else None,
-                        "ts": ts, "desatualizado": stale, "_vol": vol,
-                    }
-            elif tk == "DOLFUT" and fec:
-                out["dolar"] = {
-                    "preco": round(ultimo / 1000, 4),
-                    "fech_ant": round(fec / 1000, 4),
-                    "var_pct": round((ultimo / fec - 1) * 100, 2),
-                    "ts": ts, "fonte": "DOLFUT · Profit RTD",
-                    "desatualizado": stale,
-                }
-        if best_di:
-            best_di.pop("_vol")
-            out["di"] = best_di
-        return out
+            if melhor[0] is None or venc < melhor[0]:
+                melhor = (venc, taxa)
+                self._di_ticker = row[0].strip()
+        self._di_anual = (melhor[1] / 100.0) if melhor[1] is not None else None
+        return self._di_anual
 
 
 # ----------------------------------------------------------------
@@ -770,9 +856,12 @@ class LevelStore:
 # ----------------------------------------------------------------
 # NIVEIS AUTOMATICOS (pivot points classicos + Central Pivot Range)
 # ----------------------------------------------------------------
-def _tick5(v: float) -> int:
-    """Arredonda para o multiplo de 5 mais proximo (tick do WIN)."""
-    return int(round(v / 5.0) * 5)
+TICK_WDO = 0.5   # tick do DOLFUT (WIN usa 5 pontos; WDO usa 0,5 ponto)
+
+
+def _tick_wdo(v: float) -> float:
+    """Arredonda para o multiplo de 0,5 mais proximo (tick do WDO)."""
+    return round(round(v / TICK_WDO) * TICK_WDO, 1)
 
 
 def calcular_niveis_do_dia(base: dict, contrato: str) -> dict:
@@ -799,13 +888,16 @@ def calcular_niveis_do_dia(base: dict, contrato: str) -> dict:
         "base_dia": base["dia"],
         "contrato": contrato,
         "fonte": f"Pivots automáticos (OHLC {base['dia']}){aviso}",
-        "pivot": _tick5(p),
-        "resistencias": [_tick5(r1), _tick5(r2), _tick5(r3)],
-        "suportes":     [_tick5(s1), _tick5(s2), _tick5(s3)],
-        "alvos_compra": [_tick5(r1), _tick5(r2), _tick5(r3)],
-        "alvos_venda":  [_tick5(s1), _tick5(s2), _tick5(s3)],
-        "zona_decisiva": {"min": _tick5(min(bc, tc)), "max": _tick5(max(bc, tc))},
-        "ladder": {"min": _tick5(s3), "max": _tick5(r3)},
+        "pivot": _tick_wdo(p),
+        "resistencias": [_tick_wdo(r1), _tick_wdo(r2), _tick_wdo(r3)],
+        "suportes":     [_tick_wdo(s1), _tick_wdo(s2), _tick_wdo(s3)],
+        "alvos_compra": [_tick_wdo(r1), _tick_wdo(r2), _tick_wdo(r3)],
+        "alvos_venda":  [_tick_wdo(s1), _tick_wdo(s2), _tick_wdo(s3)],
+        "zona_decisiva": {"min": _tick_wdo(min(bc, tc)), "max": _tick_wdo(max(bc, tc))},
+        "ladder": {"min": _tick_wdo(s3), "max": _tick_wdo(r3)},
+        "maxima_ant": h,
+        "minima_ant": l,
+        "fechamento_ant": c,
     }
 
 
@@ -841,9 +933,9 @@ def vwap_plausivel(t: Tick) -> Optional[float]:
         _vwap_avisado = False
         return t.vwap
     if not _vwap_avisado:
-        print(f"[WIN] ALERTA: vwap={t.vwap:,.0f} fora do range do dia "
-              f"({t.minima:,.0f}-{t.maxima:,.0f}) - descartado. Conferir a "
-              f"coluna do campo RTD 67 no ExportarWIN.bas")
+        print(f"[WDO] ALERTA: vwap={t.vwap:,.2f} fora do range do dia "
+              f"({t.minima:,.2f}-{t.maxima:,.2f}) - descartado. Conferir a "
+              f"coluna do campo RTD 67 no ExportarWDO.bas")
         _vwap_avisado = True
     return None
 
@@ -922,20 +1014,34 @@ class SnapshotDB:
                     negocios INTEGER,
                     PRIMARY KEY (dia, corretora)
                 )""")
+            # Serie temporal do ranking (um snapshot do CUMULATIVO do dia a
+            # cada SERIE_CORRETORAS_S) - a tabela 'corretoras' acima so guarda
+            # o ultimo estado (sobrescrito); esta guarda o historico intradia,
+            # pra depois do pregao reconstruir por diferenca entre dois pontos
+            # qual corretora virou de lado e quando (ver ranking_janela do
+            # RankingCorretoras, que faz isso em tempo real com janela fixa).
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS corretoras_serie (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dia TEXT, ts TEXT, corretora TEXT,
+                    qtd_compra REAL, qtd_venda REAL,
+                    fin_compra REAL, fin_venda REAL,
+                    negocios INTEGER
+                )""")
             con.execute("""
                 CREATE TABLE IF NOT EXISTS macro_snapshots (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     dia TEXT, ts TEXT,
-                    sp500 REAL, sp500_var REAL,
+                    brent REAL, brent_var REAL,
                     dxy REAL, dxy_var REAL,
-                    dolar REAL, dolar_var REAL,
-                    di REAL, di_var_bps REAL
+                    ouro REAL, ouro_var REAL,
+                    juros_us REAL, juros_us_var_bps REAL
                 )""")
             # Leituras de IA (Gemini): antes so iam pro WS e se perdiam - sem
             # historico nao da pra medir taxa de acerto (ver
             # backtest_confluencia.py). gatilho_tipo: confluencia/periodica/manual.
             # vies e do modelo; vies_mercado/forca_mercado sao o consenso
-            # CALCULADO (agente_win.vies_consolidado), pra poder medir os dois
+            # CALCULADO (agente_wdo.vies_consolidado), pra poder medir os dois
             # separado.
             con.execute("""
                 CREATE TABLE IF NOT EXISTS leituras (
@@ -946,21 +1052,9 @@ class SnapshotDB:
                     resumo TEXT, evidencias TEXT, alertas TEXT, ressalvas TEXT,
                     preco REAL, modelo TEXT, cache INTEGER
                 )""")
-            # Indices por dia: snapshots (88k+ linhas) e fluxo (238k+) cresciam
-            # sem indice e todo endpoint que filtra WHERE dia=? (historico,
-            # ranking, backtest) fazia table scan crescente.
-            con.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_dia_ts "
-                        "ON snapshots(dia, ts)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_fluxo_dia_ts "
-                        "ON fluxo(dia, ts)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_eventos_dia "
-                        "ON eventos(dia)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_macro_dia "
-                        "ON macro_snapshots(dia)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_leituras_dia "
-                        "ON leituras(dia)")
-            # migracao: tabelas criadas com Brent (17/07 cedo) -> S&P 500
-            for old, new in (("brent", "sp500"), ("brent_var", "sp500_var")):
+            # migracao: tabela criada com S&P 500 (herdado do WIN) -> Brent
+            # (24/08/2026, ver nota do MACRO_SYMBOLS no topo do arquivo)
+            for old, new in (("sp500", "brent"), ("sp500_var", "brent_var")):
                 try:
                     con.execute(f"ALTER TABLE macro_snapshots "
                                 f"RENAME COLUMN {old} TO {new}")
@@ -972,11 +1066,53 @@ class SnapshotDB:
                     con.execute(f"ALTER TABLE macro_snapshots ADD COLUMN {col} REAL")
                 except sqlite3.OperationalError:
                     pass                     # coluna ja existe
+            # CASADO (27/08/2026): preco justo do WDO vs dolar a vista.
+            # spot = taxa a vista (5.16), wdo_pts = ultimo do futuro, du =
+            # dias uteis ate o vencimento da frente. diferencial/carrego/
+            # desvio em PONTOS. A calibracao do carrego (casado_calib_sync)
+            # regride diferencial~du sobre a coluna `diferencial` + `du`.
+            for col in ("spot", "spot_var", "wdo_pts", "diferencial", "du",
+                        "carrego_justo", "desvio", "cupom_impl"):
+                try:
+                    con.execute(f"ALTER TABLE macro_snapshots ADD COLUMN {col} REAL")
+                except sqlite3.OperationalError:
+                    pass                     # coluna ja existe
+            # migracao: Dolar (USD/BRL Yahoo/DOLFUT RTD, redundante com o
+            # preco principal) -> Ouro; DI (RTD) -> Juros EUA (25/08/2026,
+            # ver nota do MACRO_SYMBOLS no topo do arquivo)
+            for old, new in (("dolar", "ouro"), ("dolar_var", "ouro_var"),
+                              ("di", "juros_us"),
+                              ("di_var_bps", "juros_us_var_bps")):
+                try:
+                    con.execute(f"ALTER TABLE macro_snapshots "
+                                f"RENAME COLUMN {old} TO {new}")
+                except sqlite3.OperationalError:
+                    pass                     # coluna ja renomeada/inexistente
             # snapshots antigos nao tinham a coluna de data
             try:
                 con.execute("ALTER TABLE snapshots ADD COLUMN dia TEXT")
             except sqlite3.OperationalError:
                 pass                     # coluna ja existe
+            # Indices por dia: snapshots (88k+ linhas) e fluxo (238k+) cresciam
+            # sem indice e todo endpoint que filtra WHERE dia=? (historico,
+            # ranking, backtest) fazia table scan crescente. PRECISA vir depois
+            # do ALTER TABLE snapshots ADD COLUMN dia acima - banco novo (sem
+            # migracao previa) nao tem a coluna ainda nesse ponto e o CREATE
+            # INDEX falhava com "no such column: dia" (bug herdado do
+            # server_win.py, so nao aparecia la porque o win_history.db em
+            # producao ja tinha a coluna de uma migracao anterior).
+            con.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_dia_ts "
+                        "ON snapshots(dia, ts)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_fluxo_dia_ts "
+                        "ON fluxo(dia, ts)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_eventos_dia "
+                        "ON eventos(dia)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_macro_dia "
+                        "ON macro_snapshots(dia)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_leituras_dia "
+                        "ON leituras(dia)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_corretoras_serie_dia_corretora "
+                        "ON corretoras_serie(dia, corretora, ts)")
             # campos do VAP adicionados depois da criacao original da tabela fluxo
             for col in ("poc", "vah", "val", "vap_total", "vol_acima_pct", "dist_poc"):
                 try:
@@ -1078,6 +1214,31 @@ class SnapshotDB:
                 "fin_venda,negocios FROM corretoras WHERE dia=?",
                 (dia,)).fetchall()
 
+    def salvar_corretoras_serie_sync(self, linhas: list):
+        """Chamado via run_in_executor - roda em thread separada. Cada
+        chamada INSERE um ponto novo (nao e upsert - e serie temporal)."""
+        with sqlite3.connect(self.path) as con:
+            con.executemany(
+                "INSERT INTO corretoras_serie (dia,ts,corretora,qtd_compra,"
+                "qtd_venda,fin_compra,fin_venda,negocios) "
+                "VALUES (?,?,?,?,?,?,?,?)", linhas)
+
+    def carregar_corretoras_serie_sync(self, dia: str,
+                                        corretora: Optional[str] = None) -> list:
+        """Serie temporal do dia, ordenada por ts - base pro backtest de
+        'quem virou de lado'. Filtra por corretora quando informado."""
+        with sqlite3.connect(self.path) as con:
+            con.row_factory = sqlite3.Row
+            if corretora:
+                rows = con.execute(
+                    "SELECT * FROM corretoras_serie WHERE dia=? AND corretora=? "
+                    "ORDER BY ts", (dia, corretora)).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT * FROM corretoras_serie WHERE dia=? ORDER BY ts",
+                    (dia,)).fetchall()
+            return [dict(r) for r in rows]
+
     def ohlc_anterior(self, hoje: str) -> Optional[dict]:
         """OHLC do ultimo pregao ANTES de 'hoje' (pula fim de semana).
 
@@ -1125,8 +1286,8 @@ class SnapshotDB:
                 if not (row[1] <= fechamento <= row[0]):
                     con.execute(
                         "UPDATE daily_ohlc SET valido=0 WHERE dia=?", (dia,))
-                    print(f"[WIN] {dia}: FEC oficial {fechamento:,.0f} fora do "
-                          f"range gravado ({row[1]:,.0f}-{row[0]:,.0f}) - "
+                    print(f"[WDO] {dia}: FEC oficial {fechamento:,.2f} fora do "
+                          f"range gravado ({row[1]:,.2f}-{row[0]:,.2f}) - "
                           f"cobertura parcial, dia marcado como invalido")
                     return False
             con.execute("UPDATE daily_ohlc SET fechamento=? WHERE dia=?",
@@ -1272,20 +1433,65 @@ class SnapshotDB:
             "amostra_total": len(linhas),
         }
 
-    def save_macro_sync(self, sp500: Optional[dict], dxy: Optional[dict],
-                        dolar: Optional[dict], di: Optional[dict]):
-        """Historico macro para analise de correlacao com o WIN."""
+    def save_macro_sync(self, brent: Optional[dict], dxy: Optional[dict],
+                        ouro: Optional[dict], juros_us: Optional[dict],
+                        casado: Optional[dict] = None):
+        """Historico macro para analise de correlacao com o WDO (+ casado)."""
         g = lambda d, k: d.get(k) if d else None
+        c = casado or {}
         with sqlite3.connect(self.path) as con:
             con.execute(
-                "INSERT INTO macro_snapshots (dia,ts,sp500,sp500_var,"
-                "dxy,dxy_var,dolar,dolar_var,di,di_var_bps) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO macro_snapshots (dia,ts,brent,brent_var,"
+                "dxy,dxy_var,ouro,ouro_var,juros_us,juros_us_var_bps,"
+                "spot,spot_var,wdo_pts,diferencial,du,carrego_justo,desvio,"
+                "cupom_impl) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (date.today().isoformat(), time.strftime("%H:%M:%S"),
-                 g(sp500, "preco"), g(sp500, "var_pct"),
+                 g(brent, "preco"), g(brent, "var_pct"),
                  g(dxy, "preco"), g(dxy, "var_pct"),
-                 g(dolar, "preco"), g(dolar, "var_pct"),
-                 g(di, "taxa"), g(di, "var_bps")))
+                 g(ouro, "preco"), g(ouro, "var_pct"),
+                 g(juros_us, "preco"), g(juros_us, "var_bps"),
+                 c.get("spot_rate"), c.get("spot_var"), c.get("wdo_pts"),
+                 c.get("diferencial"), c.get("du"), c.get("carrego_justo"),
+                 c.get("desvio"), c.get("cupom_impl_pct")))
+
+    def casado_calib_sync(self, dias: int = 40) -> Optional[dict]:
+        """Carrego 'justo' ajustado do historico: OLS diferencial~du com 1
+        ponto por pregao (o primeiro diferencial do dia, que carrega menos
+        ruido de fluxo). None ate MIN_DIAS_CALIB pregoes com a coluna nova.
+        """
+        corte = (date.today() - timedelta(days=dias)).isoformat()
+        with sqlite3.connect(self.path) as con:
+            rows = con.execute(
+                "SELECT dia, du, diferencial FROM macro_snapshots "
+                "WHERE diferencial IS NOT NULL AND du IS NOT NULL "
+                "AND dia >= ? ORDER BY dia, id", (corte,)).fetchall()
+        por_dia: dict = {}
+        for dia, du, dif in rows:
+            if dia not in por_dia:            # primeiro (abertura) de cada dia
+                por_dia[dia] = (du, dif)
+        return casado_wdo.regredir_carrego(list(por_dia.values()))
+
+    def casado_desvio_hist_sync(self, hora_hhmm: str,
+                                janela_min: int = 45,
+                                dias: int = 8) -> list:
+        """Desvios recentes na MESMA faixa de horario (+/- janela_min),
+        pros ultimos `dias` pregoes - base do z-score do card CASADO."""
+        from datetime import datetime as _dt
+        try:
+            t = _dt.strptime(hora_hhmm[:5], "%H:%M")
+        except ValueError:
+            return []
+        lo = (t - timedelta(minutes=janela_min)).strftime("%H:%M")
+        hi = (t + timedelta(minutes=janela_min)).strftime("%H:%M")
+        corte = (date.today() - timedelta(days=dias)).isoformat()
+        with sqlite3.connect(self.path) as con:
+            rows = con.execute(
+                "SELECT desvio FROM macro_snapshots "
+                "WHERE desvio IS NOT NULL AND dia >= ? "
+                "AND substr(ts,1,5) BETWEEN ? AND ? "
+                "ORDER BY id DESC LIMIT 500", (corte, lo, hi)).fetchall()
+        return [r[0] for r in rows]
 
     def log_niveis_sync(self, dados: dict, origem: str):
         """Registra cada versao dos niveis do dia (auto, refinado ou manual)."""
@@ -1295,7 +1501,7 @@ class SnapshotDB:
                 (date.today().isoformat(), time.strftime("%H:%M:%S"),
                  origem, json.dumps(dados, ensure_ascii=False)))
 
-    def perfil_sync(self, dia: str, bucket: int = 50) -> dict:
+    def perfil_sync(self, dia: str, bucket: float = 1.0) -> dict:
         """Perfil de volume do pregao: distribui o volume negociado entre
         snapshots consecutivos no bucket de preco em que ocorreu.
 
@@ -1304,6 +1510,10 @@ class SnapshotDB:
 
         Retorna POC (preco de maior acumulo), value area (~70% do volume,
         expandida a partir do POC) e o histograma completo por bucket.
+
+        bucket default = 1,0 ponto (herdado 50 do WIN, cujo range diario em
+        pontos e ~50-100x maior que o do WDO - com tick de 0,5, 1 ponto ja
+        da granularidade fina o bastante sem virar ruido).
         """
         with sqlite3.connect(self.path) as con:
             rows = con.execute(
@@ -1313,13 +1523,13 @@ class SnapshotDB:
             cobertura = con.execute(
                 "SELECT MIN(ts), MAX(ts) FROM snapshots WHERE dia=?",
                 (dia,)).fetchone()
-        hist: dict[int, float] = {}
+        hist: dict[float, float] = {}
         prev_vol = None
         for ultimo, volume in rows:
             if prev_vol is not None:
                 dv = volume - prev_vol
                 if dv > 0:                    # ignora reset/duplicata
-                    b = int(round(ultimo / bucket) * bucket)
+                    b = round(round(ultimo / bucket) * bucket, 2)
                     hist[b] = hist.get(b, 0.0) + dv
             prev_vol = volume
         base = {"dia": dia, "bucket": bucket, "amostras": len(rows),
@@ -1438,8 +1648,10 @@ class ConfluenceEngine:
 
     THRESHOLD ADAPTATIVO: em vez de numero magico fixo, o minimo para
     confirmar e K_STD x desvio-padrao movel do proprio fluxo — o sinal
-    se recalibra ao regime de volume do dia (o delta do WIN opera em
-    escala ~1000x maior que o do WDO).
+    se recalibra sozinho ao regime de volume do dia/contrato (herdado do
+    Monitor WIN, onde o delta opera em escala ~1000x maior que a do WDO;
+    o desenho adaptativo existe justamente para nao precisar de um
+    numero fixo por contrato).
 
     Persistencia: o cruzamento so vira sinal apos PERSIST_TICKS ticks
     consecutivos alem do nivel (mesma filosofia do SignalGuard do WDO).
@@ -1572,7 +1784,7 @@ class ConfluenceEngine:
         """Iniciativa/Responsiva (Dalton, cap. 25). Usa vah/val so como
         NIVEIS DE PRECO (a forma do perfil) - nunca vap_total, que e
         conhecidamente inconsistente no feed do RTD (mesma ressalva do
-        agente_win.py e do docstring de FluxoReader._vap)."""
+        agente_wdo.py e do docstring de FluxoReader._vap)."""
         if not fluxo or fluxo.get("vah") is None:
             return None
         return ("iniciativa (fora da area de valor)" if not fluxo.get("dentro_area")
@@ -1583,24 +1795,27 @@ class ConfluenceEngine:
 # APP + LIFESPAN
 # ----------------------------------------------------------------
 reader   = CsvReader(CSV_PATH)
-blue_chips_reader = BlueChipsReader(
-    BLUE_CHIPS_CSV,
-    alt_paths=(Path(r"C:\Users\rodri\OneDrive\Apps\monitor_win\dados_blue_chips.csv"),))
 levels   = LevelStore(NIVEIS_PATH)
 db       = SnapshotDB(DB_PATH)
 manager  = ConnectionManager()
 engine   = ConfluenceEngine(levels)
 macro    = MacroFetcher()
-rtd_macro = RtdMacroReader(MACRO_RTD_CSV)
+spot     = SpotFetcher()
+macro_rtd = MacroRtdReader(MACRO_RTD_CSV)
 fluxo_reader = FluxoReader(BOOK_CSV, TT_CSV, VAP_CSV)
 ranking = RankingCorretoras()
 ranking.carregar(db.carregar_corretoras_sync(ranking.dia))   # sobrevive a restart
 last_tick: Optional[Tick] = None
-last_blue_chips: Optional[dict] = None
 last_macro: Optional[dict] = None
+last_casado: Optional[dict] = None
 last_plano_ativacao: Optional[dict] = None
 last_fluxo: Optional[dict] = None
 _leitura_auto_em_andamento = False   # evita empilhar chamadas ao Gemini
+# CASADO: calibracao do carrego (recalculada 1x/dia) + diferencial de
+# abertura do dia (fallback enquanto nao ha calibracao suficiente).
+_casado_calib: Optional[dict] = None
+_casado_calib_dia: Optional[str] = None
+_casado_ref: dict = {"dia": None, "dif_abertura": None}
 
 
 def atualizar_niveis_automaticos(force: bool = False) -> Optional[dict]:
@@ -1622,7 +1837,7 @@ def atualizar_niveis_automaticos(force: bool = False) -> Optional[dict]:
         fonte_auto = str(cfg.get("fonte", "")).startswith("Pivots autom")
         if not (fonte_auto and cfg.get("base_dia") != base["dia"]):
             return None
-    novo = calcular_niveis_do_dia(base, cfg.get("contrato", "WIN"))
+    novo = calcular_niveis_do_dia(base, cfg.get("contrato", "WDO"))
     levels.save(novo)
     db.log_niveis_sync(novo, "auto")
     return novo
@@ -1650,7 +1865,7 @@ def refinar_niveis_com_fec(fec: float) -> Optional[dict]:
     if not str(cfg.get("fonte", "")).startswith("Pivots autom"):
         return None                          # niveis manuais: nao mexe
     base = db.ohlc_anterior(hoje)
-    if base is None or abs(base["fechamento"] - fec) < 5:
+    if base is None or abs(base["fechamento"] - fec) < TICK_WDO:
         return None                          # ja esta correto (< 1 tick)
 
     if base.get("cobertura_parcial"):
@@ -1666,7 +1881,7 @@ def refinar_niveis_com_fec(fec: float) -> Optional[dict]:
     else:
         base = dict(base, fechamento=fec)
 
-    novo = calcular_niveis_do_dia(base, cfg.get("contrato", "WIN"))
+    novo = calcular_niveis_do_dia(base, cfg.get("contrato", "WDO"))
     novo["fonte"] += " · C=FEC oficial"
     levels.save(novo)
     db.log_niveis_sync(novo, "auto_fec")
@@ -1675,17 +1890,18 @@ def refinar_niveis_com_fec(fec: float) -> Optional[dict]:
 
 async def market_loop():
     """Loop principal: le CSV -> confluencia -> broadcast -> snapshot."""
-    global last_tick, last_blue_chips, last_plano_ativacao, last_fluxo
+    global last_tick, last_plano_ativacao, last_fluxo
     last_snapshot = 0.0
     last_ranking_bcast = 0.0
+    last_serie_snapshot = 0.0
     last_leitura_auto = 0.0
     loop = asyncio.get_running_loop()
     dia_atual = date.today()
     fec_conferido = False
     novo = atualizar_niveis_automaticos()
     if novo:
-        print(f"[WIN] Niveis do dia recalculados: {novo['fonte']}")
-    print(f"[WIN] Loop iniciado. Observando {CSV_PATH.name} a cada {POLL_INTERVAL}s")
+        print(f"[WDO] Niveis do dia recalculados: {novo['fonte']}")
+    print(f"[WDO] Loop iniciado. Observando {CSV_PATH.name} a cada {POLL_INTERVAL}s")
     while True:
         try:
             # Virada de dia com o server no ar: recalcula e avisa os dashboards
@@ -1695,7 +1911,7 @@ async def market_loop():
                 engine.reset_flow()      # acumulados do RTD zeram no novo pregao
                 novo = atualizar_niveis_automaticos()
                 if novo:
-                    print(f"[WIN] Niveis do dia recalculados: {novo['fonte']}")
+                    print(f"[WDO] Niveis do dia recalculados: {novo['fonte']}")
                     await manager.broadcast({"evento": "niveis_atualizados"})
             tick = reader.read_if_changed()
             if tick:
@@ -1704,14 +1920,14 @@ async def market_loop():
                     fec_conferido = True
                     novo = refinar_niveis_com_fec(tick.fec_ant)
                     if novo:
-                        print(f"[WIN] Pivots refinados com FEC oficial "
+                        print(f"[WDO] Pivots refinados com FEC oficial "
                               f"({tick.fec_ant:.0f}): {novo['fonte']}")
                         await manager.broadcast({"evento": "niveis_atualizados"})
                 last_tick = tick
                 await manager.broadcast(asdict(tick))
                 # Motor de confluencia: mapa (niveis) x fluxo (delta)
                 for ev in engine.check(tick, fluxo=last_fluxo):
-                    print(f"[WIN] {ev['msg']}")
+                    print(f"[WDO] {ev['msg']}")
                     await manager.broadcast(ev)
                     # persiste o sinal para analise historica
                     await loop.run_in_executor(None, db.save_evento_sync, ev)
@@ -1734,7 +1950,7 @@ async def market_loop():
                         await manager.broadcast({"evento": "plano_ativacao", **ativ})
                 # Leitura de IA periodica (alem do gatilho de confluencia): mantem
                 # o painel atualizado em pregao parado, sem confluencia. A cada
-                # ~15 min - contexto agora inclui macro+blue_chips (prompt maior).
+                # ~15 min - contexto inclui macro (prompt maior).
                 if now - last_leitura_auto >= LEITURA_AUTO_INTERVALO:
                     last_leitura_auto = now
                     asyncio.create_task(gerar_leitura_automatica(
@@ -1764,62 +1980,107 @@ async def market_loop():
                     await manager.broadcast(
                         {"evento": "ranking", "dia": ranking.dia,
                          "corretoras": ranking.ranking()[:12],
+                         "corretoras_janela": ranking.ranking_janela()[:12],
+                         "janela_min": JANELA_CORRETORAS_S // 60,
                          "ciclos_perdidos": ranking.negocios_perdidos})
-            bc = blue_chips_reader.read_if_changed()
-            if bc:
-                positivas = sum(1 for a in bc if a["fluxo"] == "compra")
-                negativas = sum(1 for a in bc if a["fluxo"] == "venda")
-                vies = ("compra" if positivas > negativas else
-                        "venda" if negativas > positivas else "neutro")
-                payload = {"evento": "blue_chips", "ativos": bc, "vies": vies,
-                           "positivas": positivas, "negativas": negativas}
-                last_blue_chips = payload
-                await manager.broadcast(payload)
+                # serie temporal do ranking (backtest de "quem virou de lado"
+                # depois do pregao) - cadencia mais espacada, nao precisa
+                # acompanhar o broadcast
+                if novos and now_rk - last_serie_snapshot >= SERIE_CORRETORAS_S:
+                    last_serie_snapshot = now_rk
+                    await loop.run_in_executor(
+                        None, db.salvar_corretoras_serie_sync,
+                        ranking.snapshot_serie(last_tick.timestamp if last_tick
+                                               else time.strftime("%H:%M:%S")))
         except Exception as e:
             # Blindagem: um erro num passo secundario (persistencia, leitura de
             # fluxo, etc.) NUNCA pode derrubar o loop e congelar o dashboard.
             # Loga e segue para o proximo ciclo. (Bug real 22/07: schema drift
             # da tabela fluxo matava o loop silenciosamente.)
             import traceback
-            print(f"[WIN] ERRO no ciclo do market_loop (seguindo): "
+            print(f"[WDO] ERRO no ciclo do market_loop (seguindo): "
                   f"{type(e).__name__}: {e}")
             traceback.print_exc()
         await asyncio.sleep(POLL_INTERVAL)
 
 
+def _calcular_casado_sync() -> Optional[dict]:
+    """Monta o pacote do casado a partir do ultimo tick do WDO + spot +
+    DI + calibracao. Roda no executor (le CSV do DI, faz o z-score)."""
+    global _casado_calib, _casado_calib_dia, _casado_ref
+    if last_tick is None or last_tick.ultimo is None or spot.last is None:
+        return None
+    hoje = date.today().isoformat()
+
+    # calibracao do carrego: 1x/dia
+    if _casado_calib_dia != hoje:
+        _casado_calib_dia = hoje
+        try:
+            _casado_calib = db.casado_calib_sync()
+        except Exception as e:
+            print(f"[WDO] casado_calib falhou (seguindo sem): {e}")
+            _casado_calib = None
+
+    venc = casado_wdo.vencimento_frente()
+    du = casado_wdo.dias_uteis_ate(venc)
+    wdo_pts = float(last_tick.ultimo)
+    spot_rate = spot.last["rate"]
+    diferencial = wdo_pts - spot_rate * casado_wdo.PONTOS_POR_DOLAR
+
+    # diferencial de abertura (fallback de carrego; so captura cedo)
+    if _casado_ref.get("dia") != hoje:
+        _casado_ref = {"dia": hoje, "dif_abertura": None}
+    if _casado_ref["dif_abertura"] is None and time.strftime("%H:%M") <= "10:00":
+        _casado_ref["dif_abertura"] = round(diferencial, 1)
+
+    hist = db.casado_desvio_hist_sync(time.strftime("%H:%M"))
+    pkg = casado_wdo.calcular(
+        wdo_pts=wdo_pts, spot_rate=spot_rate,
+        dif_abertura=_casado_ref["dif_abertura"],
+        calib=_casado_calib, di_anual=macro_rtd.di_anual(),
+        du=du, venc=venc, desvio_hist=hist)
+    if pkg:
+        pkg["spot_var"] = spot.last.get("var_pct")
+        pkg["spot_fonte"] = spot.last.get("fonte")
+        pkg["idade_s"] = (round(time.time() - spot.last_ok, 1)
+                          if spot.last_ok else None)
+        pkg["calibrado"] = _casado_calib is not None
+    return pkg
+
+
 async def macro_loop():
-    """Loop paralelo: S&P 500 + Dolar no Yahoo, DI no CSV do RTD.
+    """Loop paralelo: Brent + DXY + Ouro + Juros EUA (Yahoo) + CASADO
+    (dolar a vista via AwesomeAPI vs ultimo do WDO).
 
     Transmite o pacote consolidado via WS a cada MACRO_POLL segundos e
-    persiste no SQLite para estudo de correlacao com o WIN.
+    persiste no SQLite para estudo de correlacao com o WDO.
     """
-    global last_macro
+    global last_macro, last_casado
     loop = asyncio.get_running_loop()
-    print(f"[WIN] Macro loop iniciado ({', '.join(MACRO_SYMBOLS.values())} "
-          f"+ DI/DOLFUT via {MACRO_RTD_CSV.name}) a cada {MACRO_POLL}s")
+    print(f"[WDO] Macro loop iniciado ({', '.join(MACRO_SYMBOLS.values())}"
+          f" + casado) a cada {MACRO_POLL}s")
     async with httpx.AsyncClient() as client:
         while True:
             quotes = await macro.fetch_all(client)
-            rtd = rtd_macro.read()
-            di = rtd.get("di")
-            # Dolar: DOLFUT em tempo real tem prioridade; Yahoo (spot,
-            # delay) e o fallback quando o RTD falta ou esta parado.
-            dolar_rtd = rtd.get("dolar")
-            dolar = (dolar_rtd if dolar_rtd and not dolar_rtd["desatualizado"]
-                     else quotes.get("dolar"))
-            if quotes or di or dolar:
+            await spot.fetch(client)
+            casado_pkg = await loop.run_in_executor(None, _calcular_casado_sync)
+            if casado_pkg:
+                last_casado = casado_pkg
+            if quotes or last_casado:
                 last_macro = {
                     "evento": "macro",
-                    "sp500": quotes.get("sp500"),
+                    "brent": quotes.get("brent"),
                     "dxy": quotes.get("dxy"),
-                    "dolar": dolar,
-                    "di": di,
+                    "ouro": quotes.get("ouro"),
+                    "juros_us": quotes.get("juros_us"),
+                    "casado": last_casado,
                     "ts": time.strftime("%H:%M:%S"),
                 }
                 await manager.broadcast(last_macro)
                 await loop.run_in_executor(
-                    None, db.save_macro_sync,
-                    quotes.get("sp500"), quotes.get("dxy"), dolar, di)
+                    None, db.save_macro_sync, quotes.get("brent"),
+                    quotes.get("dxy"), quotes.get("ouro"),
+                    quotes.get("juros_us"), last_casado)
             await asyncio.sleep(MACRO_POLL)
 
 
@@ -1832,7 +2093,7 @@ async def lifespan(app: FastAPI):
     t2.cancel()
 
 
-app = FastAPI(title="Monitor WIN", lifespan=lifespan)
+app = FastAPI(title="Monitor WDO", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"],
     allow_methods=["*"], allow_headers=["*"],
@@ -1872,7 +2133,7 @@ async def get_niveis():
 @app.post("/niveis")
 async def set_niveis(data: dict):
     """Atualiza os niveis do dia sem reiniciar o servidor.
-    Ex.: curl -X POST http://127.0.0.1:8001/niveis -H "Content-Type: application/json" -d @niveis.json
+    Ex.: curl -X POST http://127.0.0.1:8003/niveis -H "Content-Type: application/json" -d @niveis.json
     Depois de salvar, avisa os dashboards conectados para recarregar.
     """
     saved = levels.save(data)
@@ -1905,8 +2166,8 @@ async def get_historico(dia: str):
 
 
 @app.get("/perfil/{dia}")
-async def get_perfil(dia: str, bucket: int = 50):
-    """Perfil de volume do pregao (dia = AAAA-MM-DD, ?bucket=50):
+async def get_perfil(dia: str, bucket: float = 1.0):
+    """Perfil de volume do pregao (dia = AAAA-MM-DD, ?bucket=1.0):
     POC, value area (~70%) e histograma por faixa de preco.
     Base da 'regua por acumulo' — regioes onde o mercado realmente negociou.
     """
@@ -1919,11 +2180,6 @@ async def get_ultimo():
     return asdict(last_tick) if last_tick else {"status": "aguardando dados"}
 
 
-@app.get("/blue_chips")
-async def get_blue_chips():
-    return last_blue_chips or {"status": "aguardando dados"}
-
-
 @app.get("/fluxo")
 async def get_fluxo():
     """Livro (pressao parada) + fita (pressao executada) do ultimo ciclo."""
@@ -1932,13 +2188,18 @@ async def get_fluxo():
 
 @app.get("/ranking")
 async def get_ranking():
-    """Acumulado do dia por corretora, compilado da fita (T&T0).
+    """Acumulado do dia por corretora, compilado da fita (T&T1), mais a
+    janela movel (ultimos JANELA_CORRETORAS_S segundos).
 
     saldo > 0 = corretora comprou mais do que vendeu no agregado do pregao.
+    'corretoras' e desde a abertura (tendencia do dia); 'corretoras_janela'
+    e so a janela recente (quem esta agredindo AGORA - mais ruidoso).
     ciclos_perdidos > 0 indica trechos de fita que passaram sem serem vistos
     (janela do RTD transbordou entre leituras) - o acumulado e um piso.
     """
     return {"dia": ranking.dia, "corretoras": ranking.ranking(),
+            "corretoras_janela": ranking.ranking_janela(),
+            "janela_min": JANELA_CORRETORAS_S // 60,
             "ciclos_perdidos": ranking.negocios_perdidos}
 
 
@@ -1948,12 +2209,13 @@ async def _contexto_leitura_atual() -> dict:
     loop = asyncio.get_running_loop()
     dia = date.today().isoformat()
     hist = await loop.run_in_executor(None, db.historico_sync, dia)
-    ctx = agente_win.montar_contexto(
+    ctx = agente_wdo.montar_contexto(
         last_tick, last_fluxo,
         {"corretoras": ranking.ranking(),
+         "corretoras_janela": ranking.ranking_janela(),
          "ciclos_perdidos": ranking.negocios_perdidos},
         levels.load(), hist.get("eventos") or [], hist.get("ohlc"),
-        macro=last_macro, blue_chips=last_blue_chips)
+        macro=last_macro, casado=last_casado)
     vm = ctx.get("vies_mercado")
     if vm and vm.get("vies") in ("compra", "venda") and (vm.get("forca") or 0) >= 2:
         try:
@@ -1962,7 +2224,7 @@ async def _contexto_leitura_atual() -> dict:
             if historico:
                 ctx["historico_similar"] = historico
         except Exception as e:
-            print(f"[WIN] Falha ao calcular historico_similar (seguindo): {e}")
+            print(f"[WDO] Falha ao calcular historico_similar (seguindo): {e}")
     return ctx
 
 
@@ -1977,7 +2239,7 @@ async def get_leitura(forcar: bool = False):
     chamada nova a cada clique repetido. ?forcar=true ignora o cache.
     Tambem disparada sozinha em cada confluencia (ver gerar_leitura_automatica).
     """
-    if not agente_win.disponivel():
+    if not agente_wdo.disponivel():
         return JSONResponse(
             {"erro": "GEMINI_API_KEY nao configurada no ambiente do servidor - "
                      "crie uma chave em aistudio.google.com e defina a variavel"},
@@ -1986,7 +2248,7 @@ async def get_leitura(forcar: bool = False):
     loop = asyncio.get_running_loop()
     try:
         leitura = await loop.run_in_executor(
-            None, agente_win.gerar_leitura, contexto, forcar)
+            None, agente_wdo.gerar_leitura, contexto, forcar)
     except RuntimeError as e:
         return JSONResponse({"erro": str(e)}, status_code=502)
     leitura["vies_mercado"] = contexto.get("vies_mercado")
@@ -1995,7 +2257,7 @@ async def get_leitura(forcar: bool = False):
             None, db.salvar_leitura_sync, leitura, {"tipo": "manual"},
             last_tick.ultimo if last_tick else None)
     except Exception as e:
-        print(f"[WIN] Falha ao persistir leitura manual em `leituras` (seguindo): {e}")
+        print(f"[WDO] Falha ao persistir leitura manual em `leituras` (seguindo): {e}")
     return leitura
 
 
@@ -2012,14 +2274,14 @@ async def gerar_leitura_automatica(gatilho: dict):
     empilhar chamadas nem estourar a cota do nivel gratuito.
     """
     global _leitura_auto_em_andamento
-    if _leitura_auto_em_andamento or not agente_win.disponivel():
+    if _leitura_auto_em_andamento or not agente_wdo.disponivel():
         return
     _leitura_auto_em_andamento = True
     try:
         contexto = await _contexto_leitura_atual()
         loop = asyncio.get_running_loop()
         leitura = await loop.run_in_executor(
-            None, agente_win.gerar_leitura, contexto, False)   # respeita o cache de 45s
+            None, agente_wdo.gerar_leitura, contexto, False)   # respeita o cache de 45s
         leitura["gatilho"] = gatilho
         leitura["vies_mercado"] = contexto.get("vies_mercado")
         await manager.broadcast({"evento": "leitura_auto", **leitura})
@@ -2030,10 +2292,10 @@ async def gerar_leitura_automatica(gatilho: dict):
         except Exception as e:
             # Persistencia e secundaria - uma falha aqui nao pode derrubar o
             # gatilho automatico nem virar excecao perdida no asyncio.create_task.
-            print(f"[WIN] Falha ao persistir leitura em `leituras` (seguindo): {e}")
-        print(f"[WIN] Leitura automatica gerada (gatilho: {gatilho.get('msg')})")
+            print(f"[WDO] Falha ao persistir leitura em `leituras` (seguindo): {e}")
+        print(f"[WDO] Leitura automatica gerada (gatilho: {gatilho.get('msg')})")
     except RuntimeError as e:
-        print(f"[WIN] Leitura automatica falhou: {e}")
+        print(f"[WDO] Leitura automatica falhou: {e}")
     finally:
         _leitura_auto_em_andamento = False
 
@@ -2046,12 +2308,26 @@ async def get_plano_ativacao():
 
 @app.get("/macro")
 async def get_macro():
-    """Ultimo pacote macro (S&P 500, Dolar, DI) + idade do dado em segundos."""
+    """Ultimo pacote macro (Brent, DXY, Ouro, Juros EUA, casado) + idade do dado."""
     if last_macro is None:
         return {"status": "aguardando dados"}
     return {**last_macro,
             "idade_s": round(time.time() - macro.last_ok, 1)
             if macro.last_ok else None}
+
+
+@app.get("/casado")
+async def get_casado():
+    """Preco justo do WDO por arbitragem vs o dolar a vista (o 'casado').
+
+    diferencial = WDO - pronto (pontos); preco_justo = pronto + carrego;
+    desvio = WDO - preco_justo. rotulo = esticado / neutro / atrasado pelo
+    z-score do desvio. fonte_carrego diz se o carrego veio do historico
+    calibrado ou so da abertura do dia. idade_s alto = spot travado.
+    """
+    if last_casado is None:
+        return {"status": "aguardando dados (WDO + dolar a vista)"}
+    return last_casado
 
 
 @app.post("/operacao")
@@ -2092,7 +2368,7 @@ async def get_operacoes_csv():
     body = buf.getvalue().encode("utf-8-sig")
     return Response(content=body, media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition":
-                             'attachment; filename="operacoes_win.csv"'})
+                             'attachment; filename="operacoes_wdo.csv"'})
 
 
 @app.websocket("/ws")
@@ -2101,8 +2377,6 @@ async def ws_endpoint(ws: WebSocket):
     # envia estado atual imediatamente ao conectar
     if last_tick:
         await ws.send_json(asdict(last_tick))
-    if last_blue_chips:
-        await ws.send_json(last_blue_chips)
     if last_macro:
         await ws.send_json(last_macro)
     if last_plano_ativacao:
@@ -2116,9 +2390,10 @@ async def ws_endpoint(ws: WebSocket):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print(" MONITOR WIN - http://127.0.0.1:8001")
-    print(" Dashboard:   http://127.0.0.1:8001/")
-    print(" Niveis:      http://127.0.0.1:8001/niveis")
-    print(" Macro:       http://127.0.0.1:8001/macro")
+    print(" MONITOR WDO - http://127.0.0.1:8003")
+    print(" Dashboard:   http://127.0.0.1:8003/")
+    print(" Niveis:      http://127.0.0.1:8003/niveis")
+    print(" Macro:       http://127.0.0.1:8003/macro")
+    print(" Casado:      http://127.0.0.1:8003/casado")
     print("=" * 60)
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")

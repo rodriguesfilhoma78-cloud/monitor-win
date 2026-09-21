@@ -1,7 +1,155 @@
 # Changelog — Monitor WIN
 
+> [!important] Esta pasta é o **Monitor WDO**, forkada do Monitor WIN em
+> 2026-08-24 (adaptação de scripts para o DOLFUT: ativo, tick de 0,5 ponto,
+> porta 8003, blue chips removido — ver `README.md`). Este changelog é o
+> histórico ORIGINAL do Monitor WIN, herdado como referência de como cada
+> peça do código evoluiu; novas entradas específicas do WDO vão no topo,
+> abaixo desta nota.
+
 Histórico do que foi feito, mais recente primeiro.
-Notas de sessão detalhadas: vault Obsidian `cerebelo\Day trade`.
+Notas de sessão detalhadas: `Sessão 2026-08-24 — Criação do Monitor WDO.md`
+na pasta `Day trade` (vault Obsidian).
+
+## 2026-09-17 — Card MACRO: sinais de Ouro e Juros EUA invertidos
+
+Decisão do usuário: inverter a polaridade das duas pernas no contexto macro
+do dólar. Brent e DXY ficaram como estavam.
+
+- **Ouro (GC=F)**: sobe = **FAVORÁVEL** ao DOLFUT (era contrário), cai =
+  contrário.
+- **Juros EUA (UST 10Y, ^TNX)**: sobem = **CONTRÁRIO** ao DOLFUT (era
+  favorável), caem = favorável.
+- Mexido em `dashboard_wdo.html` (`renderMacro()` — setas e selo de
+  alinhamento) e `agente_wdo.py` (`_alinhamento_macro()` + texto do prompt
+  que descreve a polaridade pra IA). Como o selo de alinhamento e o
+  `vies_mercado` contam essas setas, o voto macro muda junto.
+- Faixas mortas inalteradas (ouro 0,1%; juros 1 bp). Comentários de
+  referência em `server_wdo.py` e `README.md` atualizados.
+
+## 2026-09-13 — Janela móvel, série temporal e backtest de virada de lado por corretora
+
+Nota de sessão: `Sessão 2026-09-13 — Janela móvel, série temporal e backtest de virada de lado por corretora.md`. Mesma implementação do Monitor WIN, espelhada aqui (`server_wdo.py`/`agente_wdo.py`).
+
+- `RankingCorretoras` ganhou janela móvel de 30min (`JANELA_CORRETORAS_S`,
+  poda incremental via deque) ao lado do acumulado do dia - `ranking_janela()`
+  novo. WS/`GET /ranking` trazem `corretoras_janela`; contexto da IA
+  (`agente_wdo.py`) ganhou `ranking.top5_janela`.
+- Nova tabela `corretoras_serie` (SQLite): snapshot do cumulativo por
+  corretora a cada 60s (`SERIE_CORRETORAS_S`) - permite reconstruir qualquer
+  janela depois do pregão por diferença entre dois pontos.
+- `backtest_corretoras.py` (novo, standalone): lê `corretoras_serie` e aponta
+  viradas de lado (cruzamento de sinal do saldo da janela) e divergência
+  entre saldo do dia e saldo da última janela.
+- Testado só com dados sintéticos (fim de semana, sem fita real) - pendente
+  validar no pregão de 2026-09-14.
+
+## 2026-08-27 — Card CASADO: preço justo do WDO vs dólar à vista
+
+Caminho A (sem mexer na planilha), decisão do usuário. Objetivo: dar uma
+leitura de **de que lado está o fluxo** comparando o futuro com o dólar à
+vista — não é gatilho de entrada.
+
+- **`casado_wdo.py`** (novo): fórmula do carrego (`preço_justo = pronto +
+  carrego`, `diferencial = WDO − pronto`, `desvio = WDO − preço_justo`),
+  calendário B3 (feriados 2026–2027 hardcoded — manutenção anual),
+  `vencimento_frente()` (1º dia útil do mês seguinte, trata a rolagem),
+  `dias_uteis_ate()`, OLS `diferencial ~ du` (`regredir_carrego`),
+  `calcular()` e `voto_vies()` (3º voto do `vies_mercado`, só quando
+  `|z| ≥ 1,5`).
+- **Dólar à vista**: `SpotFetcher` no `server_wdo.py` — AwesomeAPI
+  (`economia.awesomeapi.com.br/json/last/USD-BRL`, dólar comercial, sem
+  chave, cache ~1 min), fallback Yahoo `BRL=X`. Buscado no `macro_loop` a
+  cada 30 s junto com o macro.
+- **DI de volta**: `MacroRtdReader` relê `dados_macro_rtd.csv` (só o DI1
+  de menor vencimento) — usado **apenas** pra decompor o carrego bruto e
+  o cupom cambial implícito (exibição). Cupom cambial não tem fonte
+  gratuita em tempo real (B3 só vende; brapi.dev é 15 min atrasado e só
+  ações), por isso o carrego "justo" é **ajustado do histórico**:
+  regressão diária sobre ≥ `MIN_DIAS_CALIB` (8) pregões da coluna nova.
+  Antes disso, cai pro diferencial da abertura do dia (`fonte_carrego` no
+  payload diz qual está valendo).
+- **`macro_snapshots`** (SQLite): +8 colunas (`spot`, `spot_var`,
+  `wdo_pts`, `diferencial`, `du`, `carrego_justo`, `desvio`,
+  `cupom_impl`), migração automática no mesmo padrão das anteriores.
+  `save_macro_sync` estendido; novos `casado_calib_sync` (OLS 1 ponto/dia)
+  e `casado_desvio_hist_sync` (z-score por faixa de horário).
+- **`dashboard_wdo.html`**: card **CASADO — FUTURO vs À VISTA** na coluna
+  direita, abaixo do MACRO. Diferencial, preço justo, desvio (colorido),
+  à vista + idade do dado, cupom implícito, e selo
+  ESTICADO/NEUTRO/ATRASADO pelo z-score. Evento WS `macro` agora carrega
+  `casado`.
+- **`agente_wdo.py`**: bloco `casado` no contexto da IA + regra no
+  `SYSTEM_PROMPT`; `vies_consolidado` ganhou o voto do casado (a vaga do
+  voto de blue chips removido do fork).
+- **Novo endpoint** `GET /casado`.
+- **Ressalvas** (ver conversa 27/08): AwesomeAPI trava fora do horário de
+  Londres/NY → parte do desvio pode ser só a vista correndo atrás
+  (`idade_s` no payload); carrego fitado só vale depois de ~2 semanas;
+  virada de vencimento, intervenção do BC e PTAX de fim de mês distorcem
+  o diferencial.
+- **Pendente**: `supabase_sync/sync_supabase.py` **não** foi alterado —
+  as 8 colunas novas do `macro_snapshots` só replicam pro Supabase depois
+  de `ALTER TABLE wdo_macro_snapshots ADD COLUMN ...` no remoto E incluir
+  os nomes na lista `APPEND_ONLY["macro_snapshots"]` (TODO comentado no
+  arquivo). Incluir sem a migration remota trava o sync inteiro.
+
+## 2026-08-25 — Card MACRO: Dólar→Ouro e Juros DI→Juros EUA
+
+- Trocados os dois cards redundantes/via RTD do painel MACRO por
+  commodities/juros globais que correlacionam melhor com o DOLFUT
+  (decisão do usuário):
+  - **Dólar (USD/BRL via Yahoo, proxy do próprio DOLFUT via RTD)** →
+    **Ouro (GC=F, Yahoo)**, com polaridade **invertida** igual ao Brent
+    (ouro cai = favorável/seta verde, ouro sobe = contrário/seta
+    vermelha) — ouro é cotado em USD e se move de forma inversa à força
+    global do dólar.
+  - **Juros DI (DI futuro via RTD/Excel)** → **Juros EUA (UST 10Y, ^TNX
+    via Yahoo)**, mantendo a polaridade direta que o DI já tinha (sobe =
+    favorável/seta verde) — juro americano mais alto atrai capital pros
+    EUA e tende a fortalecer o dólar globalmente.
+- `server_wdo.py`: removida a classe `RtdMacroReader` e a leitura de
+  `dados_macro_rtd.csv` no `macro_loop` — os quatro símbolos do card
+  MACRO (Brent, DXY, Ouro, Juros EUA) agora vêm todos do Yahoo Finance.
+  A planilha pode continuar exportando o CSV sem problema, só não há
+  mais consumidor Python dele.
+- Migração automática das colunas do `macro_snapshots` (SQLite):
+  `dolar`/`dolar_var`→`ouro`/`ouro_var`, `di`/`di_var_bps`→
+  `juros_us`/`juros_us_var_bps` (mesmo padrão usado pra `sp500`→`brent`
+  em 24/08). `supabase_sync/sync_supabase.py` atualizado pra sincronizar
+  as colunas novas — a tabela remota `wdo_macro_snapshots` no Supabase
+  ainda precisa da migração equivalente antes do próximo sync rodar sem
+  erro.
+- `dashboard_wdo.html` e `agente_wdo.py` (contexto da IA e
+  `_alinhamento_macro`) atualizados pra usar as chaves/rótulos novos.
+
+## 2026-08-24 — Monitor WDO criado (fork do WIN)
+
+- Cópia integral de `monitor_win` → `Dolar monitor`, adaptada pro DOLFUT:
+  ativo (`WINFUTV`→`DOLFUT`), tick (5→0,5 ponto), porta (8001→**8003**,
+  8002 já era da Agenda Econômica), painel Blue Chips removido, histórico
+  (`wdo_history.db`/`niveis.json`) zerado de propósito.
+- Fluxo (livro/fita/VAP): não foram criadas janelas novas no Profit — o
+  usuário reapontou as janelas existentes (`BOOK0`/`T&T0`/`VAP0`) do
+  WINFUTV pro DOLPRO. **Efeito colateral: o Monitor WIN ficou sem fluxo**
+  até alguém abrir janelas novas e separadas pra ele.
+- Card MACRO recalibrado pro dólar: Brent (BZ=F) no lugar do S&P 500,
+  polaridade invertida (alta=contrário/vermelho); DXY/Dólar/DI com
+  polaridade direta (positivo=favorável/verde) — oposto da lógica
+  herdada do WIN/Ibovespa.
+- Bug corrigido: `/niveis` vazio (`{}`, dia 1 sem OHLC anterior) travava
+  a régua/últimos ticks/plano do dia em silêncio — `loadNiveis()` agora
+  trata como "sem dado real" e usa o fallback.
+- App PWA "Monitor WDO — Tempo Real" instalado no Edge (app-id
+  `lnnhenchgamoiedplfmhhpgkoejjbdab`), auto-start no login, adicionado ao
+  `INICIAR_TRADE.bat`.
+- Sync pro Supabase: tabelas próprias `wdo_*` (mesmo projeto do WIN, sem
+  misturar linha), tarefa agendada `MonitorWdoSupabase` (13:00 e 18:30).
+- Gotcha de infra: `pythonw`/`python` no PATH resolvem pro alias da
+  Microsoft Store (`WindowsApps\`), que falha em silêncio quando chamado
+  via `WScript.Shell.Run` (automação COM do VBA) — `IniciarServidorWDO`
+  agora usa o caminho real
+  (`AppData\Local\Python\pythoncore-3.14-64\pythonw.exe`).
 
 ## 2026-08-22
 

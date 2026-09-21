@@ -1,11 +1,11 @@
 """
 ================================================================
- MONITOR WIN - backtest_confluencia.py
+ MONITOR WDO - backtest_confluencia.py
  Backtest retroativo de assertividade (sem dependencias externas)
 ----------------------------------------------------------------
  Responde: quando o motor local (ConfluenceEngine, eventos de
  confluencia/divergencia) ou a leitura de IA (tabela `leituras`, nova -
- ver server_win.py) apontam uma direcao, o preco realmente continuou
+ ver server_wdo.py) apontam uma direcao, o preco realmente continuou
  naquela direcao nos minutos seguintes?
 
  Cruza `eventos`/`leituras` (o "palpite" e o instante) com `snapshots`
@@ -31,7 +31,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path(__file__).parent / "win_history.db"
+DB_PATH = Path(__file__).parent / "wdo_history.db"
 HORIZONTES_MIN = (5, 15, 30)   # janelas de continuacao checadas apos o sinal
 
 
@@ -102,8 +102,8 @@ def backtest_eventos(con: sqlite3.Connection) -> tuple[dict, list[dict]]:
 
 def backtest_leituras(con: sqlite3.Connection) -> tuple[dict, dict, int]:
     """Leituras de IA (tabela `leituras`, criada 11/08/2026): compara o
-    `vies` do MODELO e, separado, o `vies_mercado` CALCULADO (macro + blue
-    chips + var% do WIN, so quando forca>=2 = consenso real) contra o preco
+    `vies` do MODELO e, separado, o `vies_mercado` CALCULADO (macro +
+    var% do WDO, so quando forca>=2 = consenso real) contra o preco
     depois da leitura. Ignora vies 'misto'/'indefinido' (sem direcao pra
     testar)."""
     try:
@@ -112,7 +112,7 @@ def backtest_leituras(con: sqlite3.Connection) -> tuple[dict, dict, int]:
             "ORDER BY dia, ts").fetchall()
     except sqlite3.OperationalError:
         # tabela `leituras` e nova (11/08/2026) - so existe depois do server
-        # rodar _init() uma vez com o server_win.py atualizado.
+        # rodar _init() uma vez com o server_wdo.py atualizado.
         return _novo_placar(), _novo_placar(), 0
     placar_ia = _novo_placar()
     placar_mercado = _novo_placar()
@@ -167,7 +167,7 @@ def main():
     con = sqlite3.connect(DB_PATH)
     try:
         print("=" * 64)
-        print(" BACKTEST DE ASSERTIVIDADE - Monitor WIN")
+        print(" BACKTEST DE ASSERTIVIDADE - Monitor WDO")
         print(" 'acerto' = preco se moveu na direcao apontada N minutos")
         print(" depois. NAO e resultado de operacao real (sem custo/stop).")
         print("=" * 64)
@@ -192,7 +192,7 @@ def main():
         else:
             _imprimir_placar("VIES DO MODELO (Gemini)", placar_ia)
             _imprimir_placar("VIES DE MERCADO CALCULADO (forca >= 2: macro + "
-                              "blue chips + WIN concordando)", placar_mercado)
+                              "WDO concordando)", placar_mercado)
 
         resumo = {
             "eventos": {tipo: {f"{h}min": placar_eventos[tipo][h] for h in HORIZONTES_MIN}

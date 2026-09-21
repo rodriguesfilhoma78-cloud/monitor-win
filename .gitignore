@@ -9,6 +9,7 @@ dados_*.csv
 niveis.json
 ranking_acum.csv
 backtest_resultado.json
+backtest_corretoras_resultado.json
 
 # backups locais (nomes tipo "win_history.db.bak_..." nao batem com *.db/*.log
 # porque a extensao real fica no meio do nome, nao no final - excluir a pasta

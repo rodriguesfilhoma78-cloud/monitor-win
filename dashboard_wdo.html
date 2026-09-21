@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Monitor WIN — Tempo Real</title>
+<title>Monitor WDO — Tempo Real</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <meta name="theme-color" content="#0b0f14">
@@ -38,6 +38,7 @@
   .zone{position:absolute;left:8%;right:8%;background:rgba(240,180,41,.08);border-top:1px dashed var(--amber);border-bottom:1px dashed var(--amber)}
   .vol-band{position:absolute;left:24%;right:24%;background:var(--blue);pointer-events:none;border-radius:1px}
   .lvl.poc{color:var(--blue)}
+  .lvl.va{color:var(--amber)}
   .price-marker{position:absolute;left:-6px;right:-6px;transform:translateY(50%);transition:bottom .35s ease}
   .price-marker .tag{position:absolute;left:50%;transform:translate(-50%,50%);background:#fff;color:#000;font-family:var(--mono);font-weight:700;font-size:13px;padding:2px 8px;border-radius:4px;white-space:nowrap;box-shadow:0 0 14px rgba(255,255,255,.35)}
   .price-marker .lineflag{position:absolute;left:0;right:0;height:2px;background:#fff;opacity:.85}
@@ -62,18 +63,6 @@
   .right{display:flex;flex-direction:column;gap:14px}
   .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
   @media(max-width:900px){.row2{grid-template-columns:1fr}}
-  .bctbl{width:100%;font-family:var(--mono);font-size:11px;border-collapse:collapse;table-layout:fixed}
-  .bctbl th,.bctbl td{padding:3px 4px;overflow:hidden}
-  .bctbl th:first-child,.bctbl td:first-child{padding-left:0}
-  .bctbl th:last-child,.bctbl td:last-child{padding-right:0}
-  .bctbl td.num{text-align:right;white-space:nowrap}
-  .bctbl th{white-space:nowrap;font-weight:400}
-  .bctbl col.c-ativo{width:19%}
-  .bctbl col.c-num{width:20%}
-  .bctbl col.c-peso{width:15%}
-  .bctbl col.c-fluxo{width:26%}
-  .bctbl td.fluxo-cell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .bctbl .fluxo-bar{display:inline-block;height:6px;background:currentColor;opacity:.6;margin-left:3px;vertical-align:middle;border-radius:2px;max-width:100%}
   .card h3{font-size:12px;letter-spacing:1.5px;color:var(--dim);margin-bottom:10px;font-family:var(--mono)}
   .dist{display:flex;justify-content:space-between;font-family:var(--mono);font-size:13px;padding:6px 0;border-bottom:1px dashed var(--line)}
   .dist:last-child{border-bottom:none}
@@ -132,7 +121,7 @@
 </head>
 <body>
 <header>
-  <h1>WIN<span> MONITOR</span></h1>
+  <h1>WDO<span> MONITOR</span></h1>
   <span id="contrato">carregando níveis…</span>
   <div class="status">
     <span><span id="connDot" class="dot"></span><span id="connTxt">desconectado</span></span>
@@ -169,6 +158,8 @@
       <div class="stat"><div class="k">ABERTURA</div><div class="v" id="stAbert">—</div></div>
       <div class="stat"><div class="k">MÁXIMA</div><div class="v up" id="stMax">—</div></div>
       <div class="stat"><div class="k">MÍNIMA</div><div class="v down" id="stMin">—</div></div>
+      <div class="stat"><div class="k">MÁX. ANTERIOR</div><div class="v up" id="stMaxAnt">—</div></div>
+      <div class="stat"><div class="k">MÍN. ANTERIOR</div><div class="v down" id="stMinAnt">—</div></div>
       <div class="stat"><div class="k">VOLUME</div><div class="v" id="stVol">—</div></div>
       <div class="stat"><div class="k">AGR. COMPRA</div><div class="v up" id="stAgrC">—</div></div>
       <div class="stat"><div class="k">AGR. VENDA</div><div class="v down" id="stAgrV">—</div></div>
@@ -194,9 +185,9 @@
                 <option value="vwap">vwap</option>
                 <option value="outro">outro</option>
               </select>
-              <input class="op-preco" id="opPreco" inputmode="numeric" maxlength="9"
+              <input class="op-preco" id="opPreco" inputmode="decimal" maxlength="9"
                      placeholder="preço (auto)"
-                     title="Preço da entrada. Em branco = usa o preço atual do pregão.">
+                     title="Preço da entrada (aceita decimal, ex.: 5423,5). Em branco = usa o preço atual do pregão.">
               <button class="btn buy" id="btnOpCompra">▲ COMPREI</button>
               <button class="btn sell" id="btnOpVenda">▼ VENDI</button>
             </div>
@@ -221,9 +212,14 @@
 
   <div class="right">
     <div class="card">
-      <h3>MACRO — IMPACTO NO IBOV</h3>
+      <h3>MACRO — CONTEXTO GLOBAL</h3>
       <div id="macroBanner"></div>
       <div id="macroRows"><div class="dist"><span class="flat">Aguardando dados…</span></div></div>
+    </div>
+    <div class="card">
+      <h3>CASADO — FUTURO vs À VISTA</h3>
+      <div id="casadoBanner"></div>
+      <div id="casadoRows"><div class="dist"><span class="flat">Aguardando dados…</span></div></div>
     </div>
     <div class="card">
       <h3>DISTÂNCIA AOS NÍVEIS</h3>
@@ -233,44 +229,31 @@
       <h3>PLANO DO DIA</h3>
       <div id="plano"></div>
     </div>
-    <div class="card">
-      <h3>BLUE CHIPS — FLUXO IBOVESPA</h3>
-      <table class="bctbl">
-        <colgroup>
-          <col class="c-ativo"><col class="c-num"><col class="c-num"><col class="c-peso"><col class="c-fluxo">
-        </colgroup>
-        <thead><tr style="color:var(--dim)">
-          <th style="text-align:left">Ativo</th>
-          <th style="text-align:right">Último</th>
-          <th style="text-align:right">Var%</th>
-          <th style="text-align:right">Peso</th>
-          <th style="text-align:right">Fluxo</th>
-        </tr></thead>
-        <tbody id="bcBody"><tr><td colspan="5" class="flat" style="padding:6px 0">Aguardando…</td></tr></tbody>
-      </table>
-      <div class="dist" style="margin-top:8px;border-bottom:none" id="bcBias">
-        <span class="flat">Aguardando dados…</span>
-      </div>
-    </div>
   </div>
 </main>
-<footer>Profit Pro RTD → Excel/VBA → CSV → FastAPI (porta 8001) → WebSocket · Ferramenta de estudo — não é recomendação de investimento.</footer>
+<footer>Profit Pro RTD → Excel/VBA → CSV → FastAPI (porta 8003) → WebSocket · Ferramenta de estudo — não é recomendação de investimento.</footer>
 
 <script>
 /* ============ NÍVEIS: carregados do servidor (/niveis) ============ */
 let NIV = null;               // preenchido via fetch
-const API = location.protocol.startsWith("http") ? "" : "http://127.0.0.1:8001";
+const API = location.protocol.startsWith("http") ? "" : "http://127.0.0.1:8003";
 const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") +
-               (location.host || "127.0.0.1:8001") + "/ws";
+               (location.host || "127.0.0.1:8003") + "/ws";
 
 const S = { ultimo:null, abertura:null, maxima:null, minima:null,
             volume:null, agrC:null, agrV:null, vwap:null, fecAnt:null,
             planoAtiv:{compra:null, venda:null},  // hora REAL do servidor
             ticks:[], lastAlert:{}, soundOn:true, sim:null, ws:null };
-const M = { sp500:null, dxy:null, dolar:null, di:null };   // último pacote macro
+const M = { brent:null, dxy:null, ouro:null, juros_us:null };   // último pacote macro
+let CASADO = null;   // último pacote do casado (preço justo vs à vista)
 
+const TICK = 0.5;   // tick do WDO (WIN era 5 pontos)
 const $ = id => document.getElementById(id);
+// Contratos (volume, agr. compra/venda, delta): inteiros, sem casa decimal.
 const fmt = v => v==null ? "—" : Math.round(v).toLocaleString("pt-BR");
+// Preço (WDO tem tick de 0,5 ponto - precisa da casa decimal, diferente do
+// WIN que era sempre múltiplo de 5 e cabia em fmt/inteiro).
+const fmtPx = v => v==null ? "—" : v.toLocaleString("pt-BR", {minimumFractionDigits:1, maximumFractionDigits:1});
 // Escapa texto de origem externa (resumo/evidencias da IA, nota do trader)
 // antes de interpolar em innerHTML - o resto do dashboard usa numeros
 // formatados e vocabulario fixo, sem risco de injecao.
@@ -278,23 +261,52 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({
   "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;"
 }[c]));
 
-async function loadNiveis(){
+/* fetch com timeout: sem isso, uma requisicao que fica pendurada (ex.: o
+   server caiu no meio do request, como num restart) trava a promise pra
+   sempre - nem resolve nem rejeita - e a tela correspondente fica travada
+   ate o usuario dar F5. */
+async function fetchJSON(url, timeoutMs = 8000){
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try{
-    const r = await fetch(API + "/niveis");
-    NIV = await r.json();
+    const r = await fetch(url, { signal: ctrl.signal });
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+
+let niveisRetryTimer = null;
+async function loadNiveis(){
+  let ok = false;
+  try{
+    const resp = await fetchJSON(API + "/niveis");
+    // "Dia 1" do WDO: sem OHLC do pregao anterior no historico ainda, o
+    // server devolve {} (nao um erro HTTP) - sem isso o resto do codigo
+    // quebra silenciosamente em NIV.ladder.min/NIV.zona_decisiva.max de um
+    // objeto vazio. Trata como "sem dado real" pra cair no fallback e
+    // continuar tentando de novo, em vez de travar régua/plano/ticks.
+    if(!resp || !resp.ladder || !resp.zona_decisiva) throw new Error("niveis vazio (sem historico do pregao anterior ainda)");
+    NIV = resp;
+    ok = true;
   }catch(e){
-    // fallback local caso o server esteja fora
-    NIV = { contrato:"WIN", resistencias:[175110,175810,176510],
-            suportes:[174410,173710,173010],
-            alvos_compra:[175810,176510,177210],
-            alvos_venda:[173710,173010,172310],
-            zona_decisiva:{min:174400,max:175100},
-            ladder:{min:172310,max:177210} };
+    // fallback local caso o server esteja fora ou sem niveis ainda (so na 1a
+    // vez, sem dado nenhum ainda - se ja tinha NIV valido, mantem o ultimo
+    // bom em vez de substituir por numeros fake)
+    if(!NIV) NIV = { contrato:"WDO", resistencias:[5411.0,5441.0,5471.0],
+            suportes:[5351.0,5321.0,5291.0],
+            alvos_compra:[5441.0,5471.0,5501.0],
+            alvos_venda:[5321.0,5291.0,5261.0],
+            zona_decisiva:{min:5346.0,max:5376.0},
+            ladder:{min:5261.0,max:5501.0} };
   }
-  $("contrato").textContent = `${NIV.contrato||"WIN"} · ${NIV.data_pregao||""} · ${NIV.fonte||""}`;
+  $("contrato").textContent = `${NIV.contrato||"WDO"} · ${NIV.data_pregao||""} · ${NIV.fonte||""}` + (ok ? "" : " · aguardando histórico do pregão anterior…");
+  $("stMaxAnt").textContent = fmtPx(NIV.maxima_ant);
+  $("stMinAnt").textContent = fmtPx(NIV.minima_ant);
   LAD = { min: NIV.ladder.min, max: NIV.ladder.max };
   buildLadder(); buildPlano(); render();
   loadPerfil();
+  clearTimeout(niveisRetryTimer);
+  if(!ok) niveisRetryTimer = setTimeout(loadNiveis, 5000);   // tenta de novo ate pegar dado real
 }
 
 /* ============ PERFIL DE VOLUME (régua por acúmulo) ============ */
@@ -302,11 +314,9 @@ let PERFIL = null;
 async function loadPerfil(){
   if(!NIV || !NIV.data_pregao) return;
   try{
-    const r = await fetch(API + "/perfil/" + NIV.data_pregao);
-    if(!r.ok) throw 0;
-    const p = await r.json();
+    const p = await fetchJSON(API + "/perfil/" + NIV.data_pregao);
     PERFIL = (p.perfil && p.perfil.length) ? p : null;
-  }catch(e){ PERFIL = null; }   // server antigo (sem /perfil) ou sem dados
+  }catch(e){ PERFIL = null; }   // server antigo (sem /perfil), sem dados ou timeout
   buildLadder();
 }
 setInterval(loadPerfil, 120000);   // perfil evolui ao longo do pregão
@@ -320,10 +330,13 @@ function pctInLadder(p){
 }
 function ensureLadderRange(p){
   if(p==null || !NIV) return;
-  const margin = Math.max(200, (LAD.max-LAD.min)*0.03);
+  // margem em pontos: WDO negocia numa faixa diaria bem menor que o WIN
+  // (dezenas de pontos, nao milhares) - 200 (herdado do WIN) inundaria a
+  // régua inteira de padding.
+  const margin = Math.max(10, (LAD.max-LAD.min)*0.03);
   let changed = false;
-  if(p > LAD.max){ LAD.max = Math.ceil((p+margin)/5)*5; changed = true; }
-  if(p < LAD.min){ LAD.min = Math.floor((p-margin)/5)*5; changed = true; }
+  if(p > LAD.max){ LAD.max = Math.ceil((p+margin)/TICK)*TICK; changed = true; }
+  if(p < LAD.min){ LAD.min = Math.floor((p-margin)/TICK)*TICK; changed = true; }
   if(changed) buildLadder();
 }
 function buildLadder(){
@@ -353,7 +366,7 @@ function buildLadder(){
     const d = document.createElement("div");
     d.className = "lvl " + cls;
     d.style.bottom = pctInLadder(price) + "%";
-    d.innerHTML = `<b>${fmt(price)}</b><span class="tick"></span><span>${label}</span>`;
+    d.innerHTML = `<b>${fmtPx(price)}</b><span class="tick"></span><span>${label}</span>`;
     el.appendChild(d);
   };
   NIV.resistencias.forEach((r,i)=>add(r,"res","R"+(i+1)));
@@ -363,6 +376,8 @@ function buildLadder(){
   if(!NIV.resistencias.includes(lastAC)) add(lastAC,"res","ALVO C");
   if(!NIV.suportes.includes(lastAV))     add(lastAV,"sup","ALVO V");
   if(PERFIL && PERFIL.poc != null) add(PERFIL.poc,"poc","POC");
+  if(PERFIL && PERFIL.va_max != null) add(PERFIL.va_max,"va","VAH");
+  if(PERFIL && PERFIL.va_min != null) add(PERFIL.va_min,"va","VAL");
   const m = document.createElement("div");
   m.className = "price-marker"; m.id = "marker"; m.style.bottom = "50%";
   m.innerHTML = `<div class="lineflag"></div><div class="tag" id="markerTag">—</div>`;
@@ -375,18 +390,18 @@ function buildPlano(){
   const hitC = a => S.maxima!=null && S.maxima >= a;
   const hitV = a => S.minima!=null && S.minima <= a;
   const alvos = (list, hit) =>
-    list.map(a => hit(a) ? `<s>${fmt(a)}</s>✅` : fmt(a)).join(" / ");
+    list.map(a => hit(a) ? `<s>${fmtPx(a)}</s>✅` : fmtPx(a)).join(" / ");
   // Gatilho ativado: a hora vem do SERVIDOR (rompimento real dos snapshots,
   // sobrevive a F5 e a reinício); só mostra ✅ quando o servidor confirma.
   const gat = ts => ts
     ? ` <span class="hitflag">✅ ativado ${ts.slice(0,5)}</span>` : "";
   $("plano").innerHTML = `
-    <div class="dist"><span class="up">Compra acima</span><b>${fmt(NIV.zona_decisiva.max)} + vol${gat(S.planoAtiv.compra)}</b></div>
+    <div class="dist"><span class="up">Compra acima</span><b>${fmtPx(NIV.zona_decisiva.max)} + vol${gat(S.planoAtiv.compra)}</b></div>
     <div class="dist"><span class="up">Alvos</span><b>${alvos(NIV.alvos_compra, hitC)}</b></div>
-    <div class="dist"><span class="up">Invalida</span><b>abaixo de ${fmt(NIV.zona_decisiva.min)}</b></div>
-    <div class="dist"><span class="down">Venda abaixo</span><b>${fmt(NIV.zona_decisiva.min)} + vol${gat(S.planoAtiv.venda)}</b></div>
+    <div class="dist"><span class="up">Invalida</span><b>abaixo de ${fmtPx(NIV.zona_decisiva.min)}</b></div>
+    <div class="dist"><span class="down">Venda abaixo</span><b>${fmtPx(NIV.zona_decisiva.min)} + vol${gat(S.planoAtiv.venda)}</b></div>
     <div class="dist"><span class="down">Alvos</span><b>${alvos(NIV.alvos_venda, hitV)}</b></div>
-    <div class="dist"><span class="down">Invalida</span><b>acima de ${fmt(NIV.zona_decisiva.max)}</b></div>`;
+    <div class="dist"><span class="down">Invalida</span><b>acima de ${fmtPx(NIV.zona_decisiva.max)}</b></div>`;
 }
 
 /* ============ SOM ============ */
@@ -424,7 +439,7 @@ function checkCrossings(prev, cur){
     const key = dir + lvl;
     if(now - (S.lastAlert[key]||0) < COOLDOWN) return;
     S.lastAlert[key] = now;
-    pushAlert(`${dir==="up"?"⬆ ROMPEU":"⬇ PERDEU"} ${fmt(lvl)}`, cls);
+    pushAlert(`${dir==="up"?"⬆ ROMPEU":"⬇ PERDEU"} ${fmtPx(lvl)}`, cls);
     beep(freq);
   };
   NIV.resistencias.concat([NIV.zona_decisiva.max]).forEach(l=>{
@@ -433,6 +448,52 @@ function checkCrossings(prev, cur){
   NIV.suportes.concat([NIV.zona_decisiva.min]).forEach(l=>{
     if(prev > l && cur <= l) fire(l,"down","sup",440);
   });
+}
+
+/* Cruzamento dos níveis de VOLUME (onde mais negociou no dia): POC, e a
+   área de valor VAH/VAL vinda do /perfil — funciona como suporte/resistência
+   porque é onde o mercado aceitou preço, não um pivô calculado. */
+function checkVolumeCrossings(prev, cur){
+  if(prev==null || !PERFIL) return;
+  const now = Date.now();
+  const fire = (key, dir, cls, freq, txt) => {
+    if(now - (S.lastAlert[key]||0) < COOLDOWN) return;
+    S.lastAlert[key] = now;
+    pushAlert(txt, cls);
+    beep(freq);
+  };
+  if(PERFIL.va_max!=null){
+    if(prev < PERFIL.va_max && cur >= PERFIL.va_max)
+      fire("vah_up","up","res",990,`⬆ ROMPEU VAH ${fmtPx(PERFIL.va_max)} (resistência de volume)`);
+    if(prev > PERFIL.va_max && cur <= PERFIL.va_max)
+      fire("vah_dn","down","sup",990,`⬇ VOLTOU pra área de valor pelo VAH ${fmtPx(PERFIL.va_max)}`);
+  }
+  if(PERFIL.va_min!=null){
+    if(prev > PERFIL.va_min && cur <= PERFIL.va_min)
+      fire("val_dn","down","sup",330,`⬇ PERDEU VAL ${fmtPx(PERFIL.va_min)} (suporte de volume)`);
+    if(prev < PERFIL.va_min && cur >= PERFIL.va_min)
+      fire("val_up","up","res",330,`⬆ VOLTOU pra área de valor pelo VAL ${fmtPx(PERFIL.va_min)}`);
+  }
+  if(PERFIL.poc!=null){
+    if(prev < PERFIL.poc && cur >= PERFIL.poc)
+      fire("poc_up","up","dive",660,`⬆ CRUZOU O POC ${fmtPx(PERFIL.poc)} (maior volume do dia)`);
+    if(prev > PERFIL.poc && cur <= PERFIL.poc)
+      fire("poc_dn","down","dive",660,`⬇ CRUZOU O POC ${fmtPx(PERFIL.poc)} (maior volume do dia)`);
+  }
+}
+
+/* Nova máxima/mínima do dia: o gatilho mais simples que existe — o preço
+   fez um extremo novo. Só dispara quando o valor de fato aumenta/diminui,
+   nunca no primeiro tick (prevMax/prevMin ainda null). */
+function checkExtremes(prevMax, prevMin){
+  if(S.maxima!=null && prevMax!=null && S.maxima > prevMax){
+    pushAlert(`🔺 NOVA MÁXIMA DO DIA: ${fmtPx(S.maxima)}`, "res");
+    beep(880);
+  }
+  if(S.minima!=null && prevMin!=null && S.minima < prevMin){
+    pushAlert(`🔻 NOVA MÍNIMA DO DIA: ${fmtPx(S.minima)}`, "sup");
+    beep(440);
+  }
 }
 
 /* ============ BIAS / DISTÂNCIAS / SPARK ============ */
@@ -444,13 +505,13 @@ function updateBias(){
   const dTxt = delta==null ? "" : ` · Δ ${delta>=0?"+":""}${fmt(delta)}`;
   if(p > NIV.zona_decisiva.max){
     el.className = "bias buy";
-    el.textContent = `🐂 VIÉS COMPRADOR — acima de ${fmt(NIV.zona_decisiva.max)}${dTxt}`;
+    el.textContent = `🐂 VIÉS COMPRADOR — acima de ${fmtPx(NIV.zona_decisiva.max)}${dTxt}`;
   }else if(p < NIV.zona_decisiva.min){
     el.className = "bias sell";
-    el.textContent = `🐻 VIÉS VENDEDOR — abaixo de ${fmt(NIV.zona_decisiva.min)}${dTxt}`;
+    el.textContent = `🐻 VIÉS VENDEDOR — abaixo de ${fmtPx(NIV.zona_decisiva.min)}${dTxt}`;
   }else{
     el.className = "bias neutral";
-    el.textContent = `⚖ ZONA DECISIVA (${fmt(NIV.zona_decisiva.min)}–${fmt(NIV.zona_decisiva.max)}) — aguardar rompimento${dTxt}`;
+    el.textContent = `⚖ ZONA DECISIVA (${fmtPx(NIV.zona_decisiva.min)}–${fmtPx(NIV.zona_decisiva.max)}) — aguardar rompimento${dTxt}`;
   }
 }
 function updateDist(){
@@ -463,16 +524,16 @@ function updateDist(){
   const rows = [];
   // Regua de precos: R3 no topo ... S3 embaixo (zona decisiva no meio)
   for(let i = NIV.resistencias.length-1; i >= 0; i--)
-    rows.push({label:`R${i+1} ${fmt(NIV.resistencias[i])}`, d:NIV.resistencias[i]-p, cls:"up", hit:hitUp(NIV.resistencias[i])});
+    rows.push({label:`R${i+1} ${fmtPx(NIV.resistencias[i])}`, d:NIV.resistencias[i]-p, cls:"up", hit:hitUp(NIV.resistencias[i])});
   // ZD↑/ZD↓ são o gatilho do plano (não alvo) — nunca riscam aqui, só os
   // alvos R/S de fato atingidos ficam riscados na lista de distância.
-  rows.push({label:`ZD↑ ${fmt(NIV.zona_decisiva.max)}`, d:NIV.zona_decisiva.max-p, cls:"amber", hit:false});
-  rows.push({label:`ZD↓ ${fmt(NIV.zona_decisiva.min)}`, d:NIV.zona_decisiva.min-p, cls:"amber", hit:false});
-  NIV.suportes.forEach((s,i)=>rows.push({label:`S${i+1} ${fmt(s)}`, d:s-p, cls:"down", hit:hitDn(s)}));
+  rows.push({label:`ZD↑ ${fmtPx(NIV.zona_decisiva.max)}`, d:NIV.zona_decisiva.max-p, cls:"amber", hit:false});
+  rows.push({label:`ZD↓ ${fmtPx(NIV.zona_decisiva.min)}`, d:NIV.zona_decisiva.min-p, cls:"amber", hit:false});
+  NIV.suportes.forEach((s,i)=>rows.push({label:`S${i+1} ${fmtPx(s)}`, d:s-p, cls:"down", hit:hitDn(s)}));
   let nearest = 0;
   rows.forEach((r,i)=>{ if(Math.abs(r.d) < Math.abs(rows[nearest].d)) nearest = i; });
   $("distList").innerHTML = rows.map((r,i)=>
-    `<div class="dist${i===nearest?" near":""}"><span class="${r.cls}">${r.hit?`<s>${r.label}</s> <span class="hitflag">✅</span>`:r.label}</span><b>${r.d>=0?"+":""}${fmt(r.d)} pts</b></div>`
+    `<div class="dist${i===nearest?" near":""}"><span class="${r.cls}">${r.hit?`<s>${r.label}</s> <span class="hitflag">✅</span>`:r.label}</span><b>${r.d>=0?"+":""}${fmtPx(r.d)} pts</b></div>`
   ).join("");
 }
 function drawSpark(){
@@ -499,75 +560,126 @@ function drawSpark(){
   ctx.stroke();
 }
 
-/* ============ MACRO (S&P 500 · Dólar · DI) ============ */
+/* ============ MACRO (Brent · DXY · Ouro · Juros EUA) ============ */
 const fmt2 = (v,d=2) => v==null ? "—" : v.toFixed(d).replace(".",",");
 function renderMacro(){
-  if(!M.sp500 && !M.dxy && !M.dolar && !M.di) return;
-  // Impacto no IBOV: S&P 500↑ (risk-on global) favorece o índice;
-  // Dólar↓ e Juros↓ favorecem. Faixa morta evita ruído virar seta.
-  const imp = [];   // +1 favorável, -1 contrário, 0 neutro
+  if(!M.brent && !M.dxy && !M.ouro && !M.juros_us) return;
+  // Impacto no DOLFUT (recalibrado 24/08 e 25/08/2026 - Brasil e' exportador
+  // de petroleo, entao a logica do IBOV/WIN nao vale aqui):
+  //   Brent↑ -> BRL tende a se fortalecer -> contra o dolar (termo de troca)
+  //   DXY↑ -> a favor do dolar
+  //   Ouro↑ -> a favor do dolar (polaridade INVERTIDA em 17/09/2026 a
+  //     pedido do usuario)
+  //   Juros EUA↑ -> contra o dolar (polaridade INVERTIDA em 17/09/2026 a
+  //     pedido do usuario)
+  // Faixa morta evita ruído virar seta.
+  const imp = [];   // +1 favorável ao dolar, -1 contrário, 0 neutro
   const rows = [];
   const seta = s => s>0 ? `<span class="seta up">▲</span>`
               : s<0 ? `<span class="seta down">▼</span>`
               : `<span class="seta flat">◆</span>`;
-  if(M.sp500){
-    const v = M.sp500.var_pct, s = Math.abs(v)<0.1 ? 0 : (v>0?1:-1);
+  if(M.brent){
+    // Unica perna INVERTIDA: Brent sobe = contra o dolar (BRL mais forte).
+    // Legenda segue a direção BRUTA do preço (caiu=vermelho, subiu=verde);
+    // a seta (s) e' quem inverte pra indicar o impacto no DOLFUT.
+    const v = M.brent.var_pct, s = Math.abs(v)<0.1 ? 0 : (v>0?-1:1);
     imp.push(s);
-    rows.push(`<div class="macro-row"><span class="nome">🇺🇸 S&P 500<small>ES=F · Yahoo</small></span>
-      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.sp500.preco)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
+    rows.push(`<div class="macro-row"><span class="nome">🛢️ Brent<small>BZ=F · Yahoo</small></span>
+      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.brent.preco)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
   }
   if(M.dxy){
-    // DXY (dólar global): sobe → risk-off p/ emergentes → contra o IBOV.
-    // Legenda segue a direção BRUTA do valor (caiu=vermelho, subiu=verde);
-    // a seta (s) e' quem inverte pra indicar o impacto no IBOV.
-    const v = M.dxy.var_pct, s = Math.abs(v)<0.1 ? 0 : (v<0?1:-1);
+    const v = M.dxy.var_pct, s = Math.abs(v)<0.1 ? 0 : (v>0?1:-1);
     imp.push(s);
     rows.push(`<div class="macro-row"><span class="nome">🌐 DXY<small>Dólar global · ICE</small></span>
       <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.dxy.preco)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
   }
-  if(M.dolar){
-    const v = M.dolar.var_pct, s = Math.abs(v)<0.05 ? 0 : (v<0?1:-1);
+  if(M.ouro){
+    // Polaridade INVERTIDA em 17/09/2026 (decisao do usuario): agora ouro
+    // SOBE = FAVORAVEL ao DOLFUT, ouro CAI = contrario. Legenda segue a
+    // direção BRUTA do preço; a seta (s) e' quem mostra o impacto no DOLFUT.
+    const v = M.ouro.var_pct, s = Math.abs(v)<0.1 ? 0 : (v>0?1:-1);
     imp.push(s);
-    rows.push(`<div class="macro-row"><span class="nome">💵 Dólar<small>${M.dolar.fonte||"USD/BRL · Yahoo"}</small></span>
-      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.dolar.preco,3)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
+    rows.push(`<div class="macro-row"><span class="nome">🥇 Ouro<small>GC=F · Yahoo</small></span>
+      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.ouro.preco)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
   }
-  if(M.di){
-    // Legenda segue a direção BRUTA da taxa (caiu=vermelho, subiu=verde);
-    // a seta (s) e' quem inverte pra indicar o impacto no IBOV.
-    const v = M.di.var_bps, s = v==null||Math.abs(v)<1 ? 0 : (v<0?1:-1);
+  if(M.juros_us){
+    // Polaridade INVERTIDA em 17/09/2026 (decisao do usuario): agora juro
+    // EUA SOBE = CONTRARIO ao DOLFUT, juro CAI = favoravel. Legenda segue a
+    // direção BRUTA da variação; a seta (s) mostra o impacto no DOLFUT.
+    const v = M.juros_us.var_bps, s = v==null||Math.abs(v)<1 ? 0 : (v>0?-1:1);
     imp.push(s);
-    const stale = M.di.desatualizado ? " ⏸" : "";
-    rows.push(`<div class="macro-row"><span class="nome">📈 Juros DI<small>${M.di.ticker||"DI1"} · Profit RTD${stale}</small></span>
-      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.di.taxa,3)}% ${v==null?"":(v>=0?"+":"")+fmt2(v,1)+" bps"}</b>${seta(s)}</div>`);
+    rows.push(`<div class="macro-row"><span class="nome">🇺🇸 Juros EUA<small>UST 10Y · Yahoo</small></span>
+      <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.juros_us.preco,3)}% ${v==null?"":(v>=0?"+":"")+fmt2(v,1)+" bps"}</b>${seta(s)}</div>`);
   }
   $("macroRows").innerHTML = rows.join("");
-  // Selo de alinhamento (estilo monitor PETR4): direção do vento macro
-  // (maioria das setas) x direção do WIN (var vs FEC). Concordando,
+  // Selo de alinhamento: direção do vento macro (maioria das setas, já
+  // calibradas pro dolar acima) x direção do WDO (var vs FEC). Concordando,
   // "Alinhados COMPRA/VENDA"; discordando, "Divergentes".
   const fav = imp.filter(s=>s>0).length, con = imp.filter(s=>s<0).length;
   const base = S.fecAnt ?? S.abertura;
-  const winVar = (S.ultimo!=null && base) ? (S.ultimo/base-1)*100 : null;
-  const winTxt = winVar==null ? "" :
-    ` · WIN ${winVar>=0?"+":""}${winVar.toFixed(2).replace(".",",")}%`;
+  const wdoVar = (S.ultimo!=null && base) ? (S.ultimo/base-1)*100 : null;
+  const wdoTxt = wdoVar==null ? "" :
+    ` · WDO ${wdoVar>=0?"+":""}${wdoVar.toFixed(2).replace(".",",")}%`;
   const macroDir = fav>con ? 1 : con>fav ? -1 : 0;
-  const winDir = winVar==null ? 0 : winVar>0.05 ? 1 : winVar<-0.05 ? -1 : 0;
+  const wdoDir = wdoVar==null ? 0 : wdoVar>0.05 ? 1 : wdoVar<-0.05 ? -1 : 0;
   let cls, txt;
-  if(macroDir===0 || winDir===0){
+  if(macroDir===0 || wdoDir===0){
     cls="misto"; txt=`◆ Vento macro ${macroDir>0?"a favor":macroDir<0?"contra":"misto"} — ${fav} a favor · ${con} contra`;
-  }else if(macroDir===winDir){
+  }else if(macroDir===wdoDir){
     cls = macroDir>0 ? "fav" : "contra";
     txt = `✔ Alinhados ${macroDir>0?"COMPRA":"VENDA"} — macro ${fav>con?fav:con}/${imp.length} ${macroDir>0?"a favor":"contra"}`;
   }else{
     cls="misto";
-    txt=`⚠ Divergentes — macro ${macroDir>0?"a favor":"contra"}, WIN na contramão`;
+    txt=`⚠ Divergentes — macro ${macroDir>0?"a favor":"contra"}, WDO na contramão`;
   }
-  $("macroBanner").innerHTML = `<div class="align-banner ${cls}">${txt}${winTxt}</div>`;
+  $("macroBanner").innerHTML = `<div class="align-banner ${cls}">${txt}${wdoTxt}</div>`;
 }
+/* ============ CASADO (preço justo do WDO vs dólar à vista) ============ */
+function renderCasado(){
+  const c = CASADO;
+  const el = $("casadoRows"), bn = $("casadoBanner");
+  if(!c || c.diferencial == null){
+    el.innerHTML = `<div class="dist"><span class="flat">Aguardando dados…</span></div>`;
+    bn.innerHTML = ""; return;
+  }
+  const sinal = v => (v>=0?"+":"") + fmt2(v,1);
+  const cls = v => v>0.5 ? "up" : v<-0.5 ? "down" : "flat";
+  // Selo: rótulo do z-score do desvio.
+  const rot = c.rotulo || "neutro";
+  const selo = rot==="esticado" ? "contra" : rot==="atrasado" ? "fav" : "misto";
+  const zTxt = c.desvio_z==null ? "sem base histórica p/ z-score"
+             : `desvio ${sinal(c.desvio)} pt · z ${sinal(c.desvio_z)}`;
+  const rotTxt = {esticado:"⚠ ESTICADO — futuro rico vs à vista",
+                  atrasado:"⚑ ATRASADO — futuro barato vs à vista",
+                  neutro:"◆ NEUTRO — diferencial no range"}[rot] || rot;
+  bn.innerHTML = `<div class="align-banner ${selo}">${rotTxt}<br>${zTxt}</div>`;
+  const idade = c.idade_s==null ? "" :
+    (c.idade_s>90 ? ` <span class="down">(${Math.round(c.idade_s)}s ⚠)</span>`
+                  : ` (${Math.round(c.idade_s)}s)`);
+  const rows = [];
+  rows.push(`<div class="macro-row"><span class="nome">💠 Diferencial<small>WDO − à vista</small></span>
+    <b class="${cls(c.diferencial)}">${sinal(c.diferencial)} pt</b></div>`);
+  rows.push(`<div class="macro-row"><span class="nome">🎯 Preço justo<small>à vista + carrego (${esc(c.fonte_carrego||"—")})</small></span>
+    <b class="flat">${fmt2(c.preco_justo,1)}</b></div>`);
+  rows.push(`<div class="macro-row"><span class="nome">📐 Desvio<small>WDO − preço justo</small></span>
+    <b class="${cls(c.desvio)}">${sinal(c.desvio)} pt</b></div>`);
+  rows.push(`<div class="macro-row"><span class="nome">💵 À vista<small>${esc(c.spot_fonte||"spot")}${idade}</small></span>
+    <b class="flat">${fmt2(c.spot_rate,4)} ${c.spot_var==null?"":(c.spot_var>=0?"+":"")+fmt2(c.spot_var)+"%"}</b></div>`);
+  const cupom = c.cupom_impl_pct==null ? "" :
+    `<div class="macro-row"><span class="nome">🏦 Cupom implícito<small>DI ${c.di_curto_pct==null?"—":fmt2(c.di_curto_pct)+"%"} · ${c.du}du p/ venc.</small></span>
+     <b class="flat">${fmt2(c.cupom_impl_pct)}%</b></div>`;
+  el.innerHTML = rows.join("") + cupom;
+}
+
 async function loadMacroInicial(){
   try{
     const r = await fetch(API + "/macro");
     const d = await r.json();
-    if(d.evento === "macro"){ M.sp500=d.sp500; M.dxy=d.dxy; M.dolar=d.dolar; M.di=d.di; renderMacro(); }
+    if(d.evento === "macro"){
+      M.brent=d.brent; M.dxy=d.dxy; M.ouro=d.ouro; M.juros_us=d.juros_us;
+      if(d.casado) CASADO = d.casado;
+      renderMacro(); renderCasado();
+    }
   }catch(e){}
 }
 async function loadPlanoAtivInicial(){
@@ -582,16 +694,16 @@ async function loadPlanoAtivInicial(){
 /* ============ RENDER ============ */
 function render(){
   const p = S.ultimo; if(p==null) return;
-  $("px").textContent = fmt(p);
+  $("px").textContent = fmtPx(p);
   if(S.abertura){
     const d = p - S.abertura, pct = (d/S.abertura*100).toFixed(2).replace(".",",");
     const el = $("pxVar");
-    el.textContent = `${d>=0?"+":""}${fmt(d)} pts (${pct}%)`;
+    el.textContent = `${d>=0?"+":""}${fmtPx(d)} pts (${pct}%)`;
     el.className = "var " + (d>0?"up":d<0?"down":"flat");
   }
-  $("stAbert").textContent = fmt(S.abertura);
-  $("stMax").textContent = fmt(S.maxima);
-  $("stMin").textContent = fmt(S.minima);
+  $("stAbert").textContent = fmtPx(S.abertura);
+  $("stMax").textContent = fmtPx(S.maxima);
+  $("stMin").textContent = fmtPx(S.minima);
   $("stVol").textContent = fmt(S.volume);
   $("stAgrC").textContent = fmt(S.agrC);
   $("stAgrV").textContent = fmt(S.agrV);
@@ -599,31 +711,31 @@ function render(){
   const sd = $("stDelta");
   sd.textContent = delta==null?"—":(delta>=0?"+":"")+fmt(delta);
   sd.className = "v " + (delta>0?"up":delta<0?"down":"");
-  $("stVwap").textContent = fmt(S.vwap);
+  $("stVwap").textContent = fmtPx(S.vwap);
   if(NIV && $("marker")){
     ensureLadderRange(p);
     $("marker").style.bottom = pctInLadder(p) + "%";
-    $("markerTag").textContent = fmt(p);
+    $("markerTag").textContent = fmtPx(p);
   }
   $("lastUpdate").textContent = new Date().toLocaleTimeString("pt-BR");
-  updateBias(); updateDist(); buildPlano(); drawSpark(); renderMacro();
+  updateBias(); updateDist(); buildPlano(); drawSpark(); renderMacro(); renderCasado();
 }
 
 /* ============ INGESTÃO ============ */
 function onTick(data){
   if(data.evento === "niveis_atualizados"){ loadNiveis(); return; }
-  if(data.evento === "blue_chips"){ renderBlueChips(data); return; }
   if(data.evento === "plano_ativacao"){
     S.planoAtiv = {compra:data.compra ?? null, venda:data.venda ?? null};
     if(NIV) buildPlano();
     return;
   }
   if(data.evento === "macro"){
-    M.sp500 = data.sp500 ?? M.sp500;
-    M.dxy   = data.dxy   ?? M.dxy;
-    M.dolar = data.dolar ?? M.dolar;
-    M.di    = data.di    ?? M.di;
-    renderMacro(); return;
+    M.brent    = data.brent    ?? M.brent;
+    M.dxy      = data.dxy      ?? M.dxy;
+    M.ouro     = data.ouro     ?? M.ouro;
+    M.juros_us = data.juros_us ?? M.juros_us;
+    if(data.casado) CASADO = data.casado;
+    renderMacro(); renderCasado(); return;
   }
   if(data.evento === "confluencia"){
     pushAlert("⭐ " + data.msg, "conf");
@@ -644,6 +756,7 @@ function onTick(data){
     return;
   }
   const prev = S.ultimo;
+  const prevMax = S.maxima, prevMin = S.minima;
   const g = k => (data[k]!==undefined && data[k]!==null) ? Number(data[k]) : null;
   S.ultimo   = g("ultimo")     ?? S.ultimo;
   S.abertura = g("abertura")   ?? S.abertura;
@@ -658,42 +771,10 @@ function onTick(data){
     S.ticks.push(S.ultimo);
     if(S.ticks.length > 300) S.ticks.shift();
     checkCrossings(prev, S.ultimo);
+    checkVolumeCrossings(prev, S.ultimo);
+    checkExtremes(prevMax, prevMin);
   }
   render();
-}
-
-/* ============ BLUE CHIPS ============ */
-function renderBlueChips(data){
-  const body = $("bcBody");
-  body.innerHTML = data.ativos.map(a => {
-    const cls = a.fluxo==="compra"?"up":a.fluxo==="venda"?"down":"flat";
-    const varTxt = a.var_pct==null ? "—" :
-      `${a.var_pct>=0?"+":""}${a.var_pct.toFixed(2).replace(".",",")}%`;
-    const barW = Math.max(2, Math.min(18, a.dominancia));
-    return `<tr>
-      <td><b>${a.ticker}</b></td>
-      <td class="num">${a.ultimo!=null ? a.ultimo.toFixed(2).replace(".",",") : "—"}</td>
-      <td class="num ${cls}">${varTxt}</td>
-      <td class="num" style="color:var(--dim)">${a.peso_ibov!=null ? a.peso_ibov.toFixed(1).replace(".",",")+"%" : "—"}</td>
-      <td class="num fluxo-cell ${cls}">${a.fluxo}<span class="fluxo-bar" style="width:${barW}px"></span></td>
-    </tr>`;
-  }).join("");
-  const total = data.ativos.length;
-  const viesHtml = data.vies==="compra"
-    ? `<span class="up">▲ VIÉS DE COMPRA</span>`
-    : data.vies==="venda"
-    ? `<span class="down">▼ VIÉS DE VENDA</span>`
-    : `<span class="flat">◆ VIÉS MISTO</span>`;
-  const n = data.vies==="compra" ? data.positivas : data.vies==="venda" ? data.negativas : Math.max(data.positivas,data.negativas);
-  $("bcBias").innerHTML =
-    `<span>Sinal agregado blue chips → WIN</span><b>${viesHtml} (${n}/${total})</b>`;
-}
-async function loadBlueChipsInicial(){
-  try{
-    const r = await fetch(API + "/blue_chips");
-    const d = await r.json();
-    if(d.ativos) renderBlueChips(d);
-  }catch(e){}
 }
 
 /* ============ WEBSOCKET ============ */
@@ -714,15 +795,15 @@ function connectWS(){
 /* ============ SIMULADOR ============ */
 function toggleSim(){
   if(S.sim){ clearInterval(S.sim); S.sim=null; $("btnSim").textContent="▶ Simulador"; setConn("off","desconectado"); return; }
-  let px = 174600, vol=0, ac=0, av=0;
-  const abert = 174800;
+  let px = 5361.0, vol=0, ac=0, av=0;
+  const abert = 5366.0;
   S.abertura = abert; S.maxima = px; S.minima = px;
   S.planoAtiv = {compra:null, venda:null};   // sem servidor no modo sim
   setConn("sim","SIMULADOR");
   $("btnSim").textContent = "⏹ Parar sim.";
   S.sim = setInterval(()=>{
-    const drift = (Math.random()-.5)*60 + (Math.random()<.05 ? (Math.random()-.5)*250 : 0);
-    px = Math.round((px + drift)/5)*5;
+    const drift = (Math.random()-.5)*3 + (Math.random()<.05 ? (Math.random()-.5)*12 : 0);
+    px = Math.round((px + drift)/TICK)*TICK;
     vol += Math.round(Math.random()*80);
     if(Math.random() > .48) ac += Math.round(Math.random()*50);
     else av += Math.round(Math.random()*50);
@@ -733,30 +814,30 @@ function toggleSim(){
     if(NIV && S.maxima>=NIV.zona_decisiva.max && !S.planoAtiv.compra) S.planoAtiv.compra = hhmm;
     if(NIV && S.minima<=NIV.zona_decisiva.min && !S.planoAtiv.venda)  S.planoAtiv.venda  = hhmm;
     onTick({ultimo:px, abertura:abert, maxima:S.maxima, minima:S.minima,
-            volume:vol, agr_compra:ac, agr_venda:av, vwap:abert + (ac-av)/10});
+            volume:vol, agr_compra:ac, agr_venda:av, vwap:abert + (ac-av)/2000});
   }, 900);
 }
 
 /* ============ LEITURA DO FLUXO (IA) ============ */
 function renderConclusao(d){
   // "Conclusão" = cruza o viés que o MODELO deu com o viés de mercado
-  // CALCULADO (agente_win.vies_consolidado: macro + blue chips + var% do
-  // WIN) - concordância com força >=2 é o sinal mais assertivo do painel;
+  // CALCULADO (agente_wdo.vies_consolidado: macro + var% do WDO) -
+  // concordância com força >=2 é o sinal mais assertivo do painel;
   // reaproveita o estilo do banner macro (.align-banner) pra ficar familiar.
   const vm = d.vies_mercado;
   if(!vm || !vm.vies) return "";
   const concorda = vm.vies === d.vies;
-  const cls = vm.forca < 2 ? "misto" : (concorda ? "fav" : "contra");
+  const cls = d.vies === "venda" ? "contra" : d.vies === "compra" ? "fav" : "misto";
   const rotulo = vm.forca < 2
     ? "SEM CONSENSO CLARO DE MERCADO"
     : (concorda ? "CONFLUENTE COM O MERCADO" : "IA DIVERGE DO CONSENSO DE MERCADO");
+  const sinal = v => v==="compra" ? `<span class="up">${esc(v)}</span>` : v==="venda" ? `<span class="down">${esc(v)}</span>` : esc(v);
   const partes = [
-    vm.macro ? `macro ${vm.macro.replace("alinhado_","alinhado ").replace("_"," ")}` : null,
-    vm.blue_chips ? `blue chips ${vm.blue_chips}` : null,
-    vm.win_var_pct != null ? `WIN ${vm.win_var_pct>=0?"+":""}${vm.win_var_pct.toFixed(2).replace(".",",")}%` : null,
+    vm.macro ? `macro alinhado ${sinal(vm.macro.replace("alinhado_",""))}` : null,
+    vm.wdo_var_pct != null ? `WDO ${vm.wdo_var_pct>=0?"+":""}${vm.wdo_var_pct.toFixed(2).replace(".",",")}%` : null,
   ].filter(Boolean).join(" · ");
   return `<div class="align-banner ${cls}"><b>CONCLUSÃO · ${rotulo}</b><br>
-    mercado ${vm.forca}/${vm.total_sinais} sinais em ${vm.vies}${partes?" · "+partes:""}</div>`;
+    mercado ${vm.forca}/${vm.total_sinais} sinais em ${sinal(vm.vies)}${partes?" · "+partes:""}</div>`;
 }
 function renderLeitura(d){
   const cls = d.vies==="compra" ? "up" : d.vies==="venda" ? "down" : "flat";
@@ -773,7 +854,7 @@ function renderLeitura(d){
   let origem = "";
   if(d.gatilho){
     origem = d.gatilho.nivel != null
-      ? " · automática (confluência "+fmt(d.gatilho.nivel)+")"
+      ? " · automática (confluência "+fmtPx(d.gatilho.nivel)+")"
       : " · automática (periódica)";
   }
   $("leituraInfo").textContent = `gerado ${d.gerado_em||"—"}${d.cache?" (cache)":""}${origem}`;
@@ -798,11 +879,11 @@ async function gerarLeitura(forcar){
 $("btnLeitura").onclick = () => gerarLeitura(true);
 
 /* ============ REGISTRO DO TRADER (histórico p/ estudo) ============ */
-/* Grava via API no servidor (tabela operacoes na win_history.db) — sobrevive
+/* Grava via API no servidor (tabela operacoes na wdo_history.db) — sobrevive
    a F5/reinício e alimenta o dataset de estudo. Se a API cair (dashboard
    aberto em file://), usa localStorage só para não perder na hora. Cada
    operação leva o contexto de mercado do instante. */
-const OP_KEY = "monitor_win_ops";
+const OP_KEY = "monitor_wdo_ops";
 let OP_ONLINE = false;
 function loadOpsLocal(){
   try{ return JSON.parse(localStorage.getItem(OP_KEY)) || []; }catch(e){ return []; }
@@ -835,7 +916,7 @@ async function renderOps(){
     const dTxt = (o.delta!=null) ? ` · Δ ${o.delta>=0?"+":""}${fmt(o.delta)}` : "";
     return `<div class="op-item ${o.lado}">
       <div class="op-head">
-        <span class="${o.lado==="compra"?"up":"down"}"><b>${dir}</b> @ ${fmt(o.preco)}</span>
+        <span class="${o.lado==="compra"?"up":"down"}"><b>${dir}</b> @ ${fmtPx(o.preco)}</span>
         <span><time>${o.hora||""}</time> <button class="op-del" data-id="${o.id}" title="Remover">✕</button></span>
       </div>
       <span class="op-motivo">${o.motivo||""}${dTxt}</span>${nota}
@@ -851,10 +932,12 @@ async function removerOp(id){
   renderOps();
 }
 async function registrarOp(lado){
-  // Preço manual (opcional). WIN é inteiro em pontos; aceita "174500",
-  // "174.500" ou "174,500" — tudo vira 174500. Em branco = preço atual.
-  const precoTxt = ($("opPreco").value || "").replace(/\D/g, "");
-  const precoManual = precoTxt ? parseInt(precoTxt, 10) : null;
+  // Preço manual (opcional). WDO tem tick de 0,5 ponto (diferente do WIN,
+  // que era inteiro) — aceita "5423,5" ou "5423.5", vírgula ou ponto como
+  // decimal, arredondado pro tick mais próximo. Em branco = preço atual.
+  const precoTxt = ($("opPreco").value || "").trim().replace(",", ".").replace(/[^0-9.]/g, "");
+  const precoNum = precoTxt ? parseFloat(precoTxt) : NaN;
+  const precoManual = !isNaN(precoNum) ? Math.round(precoNum / TICK) * TICK : null;
   const preco = precoManual != null ? precoManual : S.ultimo;
   if(preco == null){
     pushAlert("⚠ Sem preço — digite o preço ou aguarde dados antes de registrar.", "dive"); return;
@@ -880,7 +963,7 @@ async function registrarOp(lado){
   $("opNota").value = "";
   $("opPreco").value = "";
   renderOps();
-  pushAlert(`📝 Registrado: ${lado==="compra"?"COMPRA":"VENDA"} @ ${fmt(preco)}`, lado==="compra"?"res":"sup");
+  pushAlert(`📝 Registrado: ${lado==="compra"?"COMPRA":"VENDA"} @ ${fmtPx(preco)}`, lado==="compra"?"res":"sup");
   beep(lado==="compra"?660:520);
 }
 
@@ -893,7 +976,6 @@ $("btnOpCompra").onclick = () => registrarOp("compra");
 $("btnOpVenda").onclick  = () => registrarOp("venda");
 
 loadNiveis();
-loadBlueChipsInicial();
 loadMacroInicial();
 loadPlanoAtivInicial();
 renderOps();
