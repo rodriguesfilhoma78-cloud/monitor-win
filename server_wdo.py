@@ -1638,7 +1638,8 @@ class ConfluenceEngine:
                      (resistencias + suportes + alvos + zona decisiva,
                      deduplicados por preco)
       2. Fluxo     : EMA do fluxo INCREMENTAL de agressao confirma a
-                     direcao E esta acelerando
+                     direcao E nao esta claramente perdendo forca
+                     (tolerancia ACCEL_TOLERANCE - ver _flow_confirms)
 
     FLUXO INCREMENTAL: agr_compra/agr_venda do RTD sao ACUMULADOS do dia,
     entao delta = compra - venda tambem e acumulado. O que confirma um
@@ -1663,6 +1664,9 @@ class ConfluenceEngine:
     K_STD         = 1.5       # threshold = K_STD x std movel do fluxo
     MIN_SAMPLES   = 30        # amostras de fluxo antes de confirmar (~1 min)
     FLOW_WINDOW   = 300       # janela movel do std (~10 min de ticks)
+    ACCEL_TOLERANCE = 0.8     # EMA so precisa estar em >=80% do pico anterior
+                               # (nao mais estritamente > que o tick passado -
+                               # ver nota em _flow_confirms)
 
     def __init__(self, level_store: "LevelStore"):
         self.levels = level_store
@@ -1704,17 +1708,27 @@ class ConfluenceEngine:
 
     def _flow_confirms(self, direction: str) -> bool:
         """Fluxo confirma se a EMA aponta na direcao, acima do threshold
-        adaptativo, E esta acelerando."""
+        adaptativo, E nao esta claramente perdendo forca.
+
+        Antes exigia abs(flow_ema) > abs(flow_ema_prev) estrito - a EMA
+        tinha que estar CRESCENDO no tick exato em que a persistencia de
+        PERSIST_TICKS fecha. Isso e uma coincidencia rara (o pico do
+        impulso raramente cai bem no 3o tick alem do nivel): em quase um
+        mes de producao (03/07 a 21/09/2026, 238 eventos) o motor nunca
+        gerou "confluencia", so "divergencia" - ver backtest_confluencia.py.
+        Relaxado pra tolerancia: a EMA so precisa estar em pelo menos
+        ACCEL_TOLERANCE (80%) do pico anterior, permitindo uma leve
+        desaceleracao logo apos o pico sem descartar a confirmacao."""
         thr = self._threshold()
         if thr is None or self.flow_ema is None:
             return False
-        accelerating = (
-            self.flow_ema_prev is not None
-            and abs(self.flow_ema) > abs(self.flow_ema_prev)
+        not_fading = (
+            self.flow_ema_prev is None
+            or abs(self.flow_ema) >= abs(self.flow_ema_prev) * self.ACCEL_TOLERANCE
         )
         if direction == "up":
-            return self.flow_ema > thr and accelerating
-        return self.flow_ema < -thr and accelerating
+            return self.flow_ema > thr and not_fading
+        return self.flow_ema < -thr and not_fading
 
     def check(self, tick: Tick, fluxo: Optional[dict] = None) -> list[dict]:
         """Retorna lista de eventos de confluencia detectados neste tick.

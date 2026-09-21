@@ -11,6 +11,28 @@ Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: `Sessão 2026-08-24 — Criação do Monitor WDO.md`
 na pasta `Day trade` (vault Obsidian).
 
+## 2026-09-21 — ConfluenceEngine: relaxa condicao de "acelerando"
+
+`backtest_confluencia.py` contra o `wdo_history.db` real (03/07 a 21/09) mostrou
+0 eventos de `confluencia` contra 238 de `divergencia` - o motor nunca
+confirmava um rompimento. Causa: `_flow_confirms` exigia `abs(flow_ema) >
+abs(flow_ema_prev)` estrito, ou seja a EMA do fluxo tinha que estar CRESCENDO
+no tick exato em que a persistencia (`PERSIST_TICKS=3`) fechava - coincidencia
+rara demais pra acontecer na pratica.
+
+- Nova constante `ACCEL_TOLERANCE = 0.8`: em vez de exigir crescimento estrito,
+  so exige que a EMA esteja em pelo menos 80% do pico anterior (nao esta
+  "claramente perdendo forca"). Permite confirmar confluencia logo apos o pico
+  do impulso, nao so enquanto ainda esta subindo.
+- Validado isolado (sem depender do pregao ao vivo): pico que desacelera pra
+  85% do valor anterior agora confirma (antes era rejeitado mesmo bem acima do
+  threshold); desaceleracao forte (75%) continua rejeitada; caso "ainda
+  acelerando" continua confirmando como antes.
+- Pendente: validar com dado real do proximo pregao (rodar
+  `backtest_confluencia.py` de novo depois de alguns dias e conferir se
+  `confluencia` passa a aparecer e se a taxa de acerto e melhor que os ~40-47%
+  medidos so com `divergencia`).
+
 ## 2026-09-17 — Card MACRO: sinais de Ouro e Juros EUA invertidos
 
 Decisão do usuário: inverter a polaridade das duas pernas no contexto macro
