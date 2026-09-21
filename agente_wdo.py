@@ -77,14 +77,17 @@ Regras de leitura especificas deste sistema (nao invente numeros fora delas):
   total.
 - eventos_recentes (confluencia/divergencia) ja sao sinais do motor local;
   cite-os quando relevantes, nao os recalcule.
-- macro (brent_var_pct, dxy_var_pct, ouro_var_pct, juros_us_var_bps) e o
-  pano de fundo do dia (petroleo, cambio global, ouro, juros americano) -
+- macro (brent_var_pct, dxy_var_pct, ouro_var_pct, juros_us_var_bps,
+  mini_indice_var_pct) e o pano de fundo do dia (petroleo, cambio global,
+  ouro, juros americano, bolsa brasileira via ^BVSP como proxy do WIN) -
   NAO e o WDO, e contexto.
   macro.alinhamento_com_wdo ja aplica a polaridade calibrada pro dolar
-  (recalibrada 24/08, 25/08 e 17/09/2026): Brent sobe = CONTRARIO (Brasil
-  exportador de petroleo, BRL tende a se fortalecer); DXY sobe = FAVORAVEL;
-  Ouro sobe = FAVORAVEL e Juros EUA sobem = CONTRARIO (sinais invertidos em
-  17/09/2026 por decisao do usuario). Pode confiar no rotulo
+  (recalibrada 24/08, 25/08, 17/09 e 21/09/2026): Brent sobe = CONTRARIO
+  (Brasil exportador de petroleo, BRL tende a se fortalecer); DXY sobe =
+  FAVORAVEL; Ouro sobe = FAVORAVEL; Juros EUA sobem = CONTRARIO (sinais
+  invertidos em 17/09/2026 por decisao do usuario); Mini Índice sobe =
+  CONTRARIO (apetite a risco atrai fluxo pro Brasil, BRL se fortalece -
+  adicionado 21/09/2026). Pode confiar no rotulo
   "alinhado_compra"/"alinhado_venda"/"divergente" sem precisar reinterpretar
   a polaridade.
 - casado (quando presente) e o preco justo do WDO por ARBITRAGEM contra o
@@ -178,8 +181,8 @@ def disponivel() -> bool:
 def _alinhamento_macro(macro: dict, tick) -> Optional[dict]:
     """Replica a regra do banner 'MACRO' do dashboard (dashboard_wdo.html,
     renderMacro()) para o contexto da IA nao contradizer o que o trader ja
-    ve na tela. Polaridade recalibrada pro dolar em 24/08, 25/08 e
-    17/09/2026 (decisao do usuario, substitui a herdada do Monitor
+    ve na tela. Polaridade recalibrada pro dolar em 24/08, 25/08, 17/09 e
+    21/09/2026 (decisao do usuario, substitui a herdada do Monitor
     WIN/Ibovespa):
     - Brent sobe = CONTRARIO ao dolar (Brasil exportador de petroleo, BRL
       tende a se fortalecer com o termo de troca melhor).
@@ -187,6 +190,9 @@ def _alinhamento_macro(macro: dict, tick) -> Optional[dict]:
     - Ouro sobe = FAVORAVEL ao dolar (sinal INVERTIDO em 17/09/2026).
     - Juros EUA (UST 10Y) sobem = CONTRARIO ao dolar (sinal INVERTIDO em
       17/09/2026).
+    - Mini Índice (WIN, proxy ^BVSP) sobe = CONTRARIO ao dolar (apetite a
+      risco atrai fluxo pro Brasil, BRL se fortalece - adicionado
+      21/09/2026).
     (faixas mortas identicas as do banner para nao virar ruido em sinal)."""
     sinais = []
     brent = macro.get("brent") or {}
@@ -205,6 +211,10 @@ def _alinhamento_macro(macro: dict, tick) -> Optional[dict]:
     if juros_us.get("var_bps") is not None:
         v = juros_us["var_bps"]
         sinais.append(0 if abs(v) < 1 else (1 if v < 0 else -1))
+    mini_indice = macro.get("mini_indice") or {}
+    if mini_indice.get("var_pct") is not None:
+        v = mini_indice["var_pct"]
+        sinais.append(0 if abs(v) < 0.1 else (1 if v < 0 else -1))
     if not sinais:
         return None
     fav = sum(1 for s in sinais if s > 0)
@@ -320,6 +330,7 @@ def montar_contexto(tick, fluxo: Optional[dict], ranking_dados: dict,
             "dxy_var_pct": (macro.get("dxy") or {}).get("var_pct"),
             "ouro_var_pct": (macro.get("ouro") or {}).get("var_pct"),
             "juros_us_var_bps": (macro.get("juros_us") or {}).get("var_bps"),
+            "mini_indice_var_pct": (macro.get("mini_indice") or {}).get("var_pct"),
         }
         alinhamento = _alinhamento_macro(macro, tick)
         if alinhamento:

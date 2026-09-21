@@ -114,6 +114,16 @@ PREGAO_FECHA_APOS   = "17:45"    # ultimo tick tem que vir depois disso
 #     tira a dependencia do RTD/Excel (dados_macro_rtd.csv, exportado pelo
 #     ExportarWDO.bas) para o card MACRO - o CSV continua sendo gerado
 #     pela planilha mas nao e' mais lido por este servidor.
+#
+# Em 21/09/2026 adicionado o MINI INDICE (WIN) como quinta perna do card
+# MACRO, a pedido do usuario. Nao ha simbolo Yahoo pro futuro WIN em si;
+# usa-se ^BVSP (Ibovespa a vista, o ativo-objeto do WIN) como proxy - mesmo
+# desenho do Brent como proxy de termo de troca. Polaridade CONTRARIA ao
+# DOLFUT (mesmo sentido do Brent): bolsa brasileira sobe = apetite a risco
+# por ativos locais, fluxo de dolar ENTRA no Brasil -> BRL se fortalece ->
+# DOLFUT tende a CAIR. Por isso indice SOBE = seta vermelha/contraria ao
+# dolar, indice CAI = seta verde/favoravel (ver renderMacro() no
+# dashboard_wdo.html e _alinhamento_macro() no agente_wdo.py).
 YAHOO_CHART   = ("https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                  "?range=1d&interval=15m")
 MACRO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -125,7 +135,7 @@ MACRO_POLL    = 30                            # segundos entre consultas
 # emergentes"). O card MACRO nao foi recalibrado para essa polaridade -
 # ver ressalva no README.
 MACRO_SYMBOLS = {"brent": "BZ=F", "dxy": "DX-Y.NYB", "ouro": "GC=F",
-                  "juros_us": "^TNX"}
+                  "juros_us": "^TNX", "mini_indice": "^BVSP"}
 
 # --- CASADO: preco justo do WDO vs dolar a vista (Caminho A, 27/08/2026) --
 # dolar a vista (dolar comercial): AwesomeAPI, sem chave, cache de ~1 min.
@@ -252,6 +262,8 @@ class FluxoReader:
     JANELA_MIN_S = 0.1    # abaixo disso a taxa vira ruido amplificado
     AREA_VALOR = 0.70     # fracao do volume que define a area de valor
     ASSINATURA = 6        # negocios usados para casar a janela anterior
+    TT_PAUSADO_AVISO_S = 180   # so loga apos ficar pausado por esse tempo
+                               # (evita ruido de log por um blip de 1 ciclo)
 
     def __init__(self, book_path: Path, tt_path: Path,
                  vap_path: Optional[Path] = None):
@@ -259,6 +271,8 @@ class FluxoReader:
         self.tt_path = tt_path
         self.vap_path = vap_path
         self._tt_anterior: list = []
+        self._tt_pausado_desde: Optional[float] = None  # 1o ciclo pausado
+        self._tt_pausado_avisado = False                 # ja logou este episodio?
 
     @staticmethod
     def _ler(path: Path) -> list:
@@ -415,6 +429,31 @@ class FluxoReader:
         self._tt_anterior = atual
         return novos, perdida
 
+    def _marcar_tt_pausado(self, pausado_agora: bool) -> bool:
+        """Atualiza o estado de pausa do T&T0 (RankingCorretoras depende so
+        dele) e loga UMA vez por episodio - so depois de TT_PAUSADO_AVISO_S
+        (evita logar um blip de 1-2 ciclos, ex. Excel escrevendo o CSV na
+        hora exata da leitura). O flag em si (retorno) reflete o ciclo atual
+        sem essa espera - e usado pro broadcast em tempo real."""
+        agora = time.time()
+        if pausado_agora:
+            if self._tt_pausado_desde is None:
+                self._tt_pausado_desde = agora
+            dur = agora - self._tt_pausado_desde
+            if dur >= self.TT_PAUSADO_AVISO_S and not self._tt_pausado_avisado:
+                self._tt_pausado_avisado = True
+                print(f"[WDO] T&T0 (Fita) RTD pausado ha {dur:.0f}s - "
+                      f"selecione a aba da Fita/Times&Trades no Profit Pro "
+                      f"(ranking de corretoras parado de acumular)")
+            return True
+        if self._tt_pausado_desde is not None:
+            dur = agora - self._tt_pausado_desde
+            if self._tt_pausado_avisado:
+                print(f"[WDO] T&T0 (Fita) RTD voltou (ficou pausado {dur:.0f}s)")
+            self._tt_pausado_desde = None
+            self._tt_pausado_avisado = False
+        return False
+
     def ler(self, preco_ref: Optional[float] = None) -> Optional[dict]:
         book = self._book()
         vap = self._vap(preco_ref)
@@ -446,6 +485,13 @@ class FluxoReader:
                 elif p <= book["bid"]:
                     agr_venda += q
         executado = sum(qtds)
+        # T&T0 "RTD Pausado - Selecione uma das abas linkadas": o Profit Pro
+        # so atualiza a Fita/T&T0 enquanto aquela aba esta ativa/selecionada
+        # (BOOK0/VAP0 nao tem essa restricao - por isso o livro e o VAP
+        # continuam normais mesmo com a fita parada). Sinal: a janela tem
+        # linhas (arquivo existe, nao esta vazio) mas NENHUMA virou negocio
+        # valido - as linhas sao so o texto de aviso do RTD, nao numeros.
+        tt_pausado = self._marcar_tt_pausado(bool(janela_rows) and not qtds)
         # Span da amostra: base para converter a janela em taxa. Se todos os
         # negocios tem o mesmo carimbo (rajada), nao da para estimar ritmo.
         janela = (max(horas) - min(horas)) if len(horas) >= 2 else 0.0
@@ -471,6 +517,14 @@ class FluxoReader:
             "pressao_fita": round((agr_compra - agr_venda) / executado, 3)
                             if executado else 0.0,
             "timestamp": time.strftime("%H:%M:%S"),
+            # true = T&T0 sem negocio valido AGORA (RTD pausado no Profit Pro
+            # ou pregao genuinamente parado) - ranking de corretoras nao
+            # recebe negocio novo enquanto isto for true. Vai no broadcast
+            # 'fluxo' (todo ciclo), nao no 'ranking' (que so dispara com
+            # novos != [] e ficaria mudo justamente durante a pausa).
+            "tt_pausado": tt_pausado,
+            "tt_pausado_desde": (time.strftime("%H:%M:%S", time.localtime(self._tt_pausado_desde))
+                                  if self._tt_pausado_desde else None),
         }
         if book:
             out.update(book)
@@ -1088,6 +1142,13 @@ class SnapshotDB:
                                 f"RENAME COLUMN {old} TO {new}")
                 except sqlite3.OperationalError:
                     pass                     # coluna ja renomeada/inexistente
+            # Mini Indice (WIN, proxy ^BVSP) adicionado depois da criacao
+            # original da tabela (21/09/2026, ver nota do MACRO_SYMBOLS)
+            for col in ("mini_indice", "mini_indice_var"):
+                try:
+                    con.execute(f"ALTER TABLE macro_snapshots ADD COLUMN {col} REAL")
+                except sqlite3.OperationalError:
+                    pass                     # coluna ja existe
             # snapshots antigos nao tinham a coluna de data
             try:
                 con.execute("ALTER TABLE snapshots ADD COLUMN dia TEXT")
@@ -1435,7 +1496,8 @@ class SnapshotDB:
 
     def save_macro_sync(self, brent: Optional[dict], dxy: Optional[dict],
                         ouro: Optional[dict], juros_us: Optional[dict],
-                        casado: Optional[dict] = None):
+                        casado: Optional[dict] = None,
+                        mini_indice: Optional[dict] = None):
         """Historico macro para analise de correlacao com o WDO (+ casado)."""
         g = lambda d, k: d.get(k) if d else None
         c = casado or {}
@@ -1444,8 +1506,8 @@ class SnapshotDB:
                 "INSERT INTO macro_snapshots (dia,ts,brent,brent_var,"
                 "dxy,dxy_var,ouro,ouro_var,juros_us,juros_us_var_bps,"
                 "spot,spot_var,wdo_pts,diferencial,du,carrego_justo,desvio,"
-                "cupom_impl) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "cupom_impl,mini_indice,mini_indice_var) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (date.today().isoformat(), time.strftime("%H:%M:%S"),
                  g(brent, "preco"), g(brent, "var_pct"),
                  g(dxy, "preco"), g(dxy, "var_pct"),
@@ -1453,7 +1515,8 @@ class SnapshotDB:
                  g(juros_us, "preco"), g(juros_us, "var_bps"),
                  c.get("spot_rate"), c.get("spot_var"), c.get("wdo_pts"),
                  c.get("diferencial"), c.get("du"), c.get("carrego_justo"),
-                 c.get("desvio"), c.get("cupom_impl_pct")))
+                 c.get("desvio"), c.get("cupom_impl_pct"),
+                 g(mini_indice, "preco"), g(mini_indice, "var_pct")))
 
     def casado_calib_sync(self, dias: int = 40) -> Optional[dict]:
         """Carrego 'justo' ajustado do historico: OLS diferencial~du com 1
@@ -2063,8 +2126,8 @@ def _calcular_casado_sync() -> Optional[dict]:
 
 
 async def macro_loop():
-    """Loop paralelo: Brent + DXY + Ouro + Juros EUA (Yahoo) + CASADO
-    (dolar a vista via AwesomeAPI vs ultimo do WDO).
+    """Loop paralelo: Brent + DXY + Ouro + Juros EUA + Mini Indice (Yahoo)
+    + CASADO (dolar a vista via AwesomeAPI vs ultimo do WDO).
 
     Transmite o pacote consolidado via WS a cada MACRO_POLL segundos e
     persiste no SQLite para estudo de correlacao com o WDO.
@@ -2087,6 +2150,7 @@ async def macro_loop():
                     "dxy": quotes.get("dxy"),
                     "ouro": quotes.get("ouro"),
                     "juros_us": quotes.get("juros_us"),
+                    "mini_indice": quotes.get("mini_indice"),
                     "casado": last_casado,
                     "ts": time.strftime("%H:%M:%S"),
                 }
@@ -2094,7 +2158,8 @@ async def macro_loop():
                 await loop.run_in_executor(
                     None, db.save_macro_sync, quotes.get("brent"),
                     quotes.get("dxy"), quotes.get("ouro"),
-                    quotes.get("juros_us"), last_casado)
+                    quotes.get("juros_us"), last_casado,
+                    quotes.get("mini_indice"))
             await asyncio.sleep(MACRO_POLL)
 
 
@@ -2322,7 +2387,7 @@ async def get_plano_ativacao():
 
 @app.get("/macro")
 async def get_macro():
-    """Ultimo pacote macro (Brent, DXY, Ouro, Juros EUA, casado) + idade do dado."""
+    """Ultimo pacote macro (Brent, DXY, Ouro, Juros EUA, Mini Indice, casado) + idade do dado."""
     if last_macro is None:
         return {"status": "aguardando dados"}
     return {**last_macro,

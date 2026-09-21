@@ -11,6 +11,62 @@ Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: `Sessão 2026-08-24 — Criação do Monitor WDO.md`
 na pasta `Day trade` (vault Obsidian).
 
+## 2026-09-21 — Mini Indice (WIN) adicionado ao card MACRO
+
+A pedido do usuario, quinta perna do card MACRO: Mini Indice, usando `^BVSP`
+(Ibovespa a vista via Yahoo) como proxy - nao ha simbolo Yahoo pro futuro WIN
+em si. Polaridade CONTRARIA ao DOLFUT, mesmo sentido do Brent: indice sobe =
+apetite a risco atrai fluxo pro Brasil, BRL se fortalece = seta
+vermelha/contraria; indice cai = seta verde/favoravel.
+
+- `MACRO_SYMBOLS` (`server_wdo.py`) ganhou `"mini_indice": "^BVSP"`; migracao
+  de schema adiciona `mini_indice`/`mini_indice_var` em `macro_snapshots`;
+  `save_macro_sync()` e `macro_loop()` persistem e transmitem o novo campo.
+- `dashboard_wdo.html` (`renderMacro()`): nova linha do card com a mesma
+  logica de seta invertida do Brent (`s = v>0 ? -1 : 1`).
+- `agente_wdo.py`: `_alinhamento_macro()` inclui o novo sinal na votacao de
+  alinhamento macro x WDO; `montar_contexto()` expoe `mini_indice_var_pct`;
+  prompt da IA documenta a polaridade pra nao contradizer o card.
+- Auditoria (mesma sessao, a pedido do usuario): confirmado que a IA usa
+  fluxo completo (livro+fita+VAP+ranking), macro (futuro) + casado (a vista)
+  e o `vies_mercado` calculado, e que `evidencias`/`alertas`/`ressalvas` estao
+  sendo persistidos de verdade em `leituras` (257 linhas reais checadas no
+  banco). `backtest_confluencia.py` rodado de novo: ainda 0 eventos de
+  `confluencia` (o fix de `ACCEL_TOLERANCE` desta mesma sessao ainda nao teve
+  pregao pra gerar dado novo) e acuracia direcional seguindo perto de
+  cara-ou-coroa (43-51% conforme o sinal e horizonte) - ver nota de sessao no
+  vault Obsidian pros numeros completos.
+
+## 2026-09-21 — Instrumentacao: detecta T&T0 (Fita) pausado no Profit Pro
+
+Investigado por que `corretoras`/`corretoras_serie` ficaram sem gravar nenhuma
+linha de 16 a 20/09: com o pregao aberto, comparando `fluxo` campo a campo,
+BOOK0 (bid/ask) e VAP0 (POC/VAH/VAL) estavam normais o dia inteiro, mas
+`amostra_negocios` (T&T0) ficou zerado das 09:09 as 14:07 - o `dados_tt.csv`
+mostrava `RTD Pausado - Selecione uma das abas linkadas` no lugar de negocios.
+Causa: o Profit Pro so atualiza a Fita/T&T0 enquanto aquela aba especifica
+esta ativa/selecionada - Livro e VAP nao tem essa restricao, por isso so o
+ranking de corretoras (que depende 100% do T&T0) apaga, sem nenhum erro no
+resto do sistema.
+
+- `FluxoReader.ler()` (`server_wdo.py`) ganhou deteccao: `tt_pausado` = true
+  quando a janela do T&T0 tem linhas mas nenhuma virou negocio valido (o
+  sinal do estado "RTD Pausado", diferente de arquivo vazio/pregao fechado).
+  Novo campo `tt_pausado_desde` (hora do 1o ciclo pausado, reseta quando volta).
+- Log (`[WDO] T&T0 (Fita) RTD pausado ha Xs - selecione a aba...`) so depois
+  de `TT_PAUSADO_AVISO_S=180s` pausado, pra nao logar blip de 1-2 ciclos; loga
+  a recuperacao tambem, com a duracao total do episodio.
+- `tt_pausado`/`tt_pausado_desde` vao no broadcast `evento: fluxo` (todo ciclo,
+  ~2s) - NAO no `evento: ranking`, que so dispara com `novos != []` e ficaria
+  mudo bem na hora que mais importa avisar.
+- `dashboard_wdo.html` ainda nao tem nenhum painel de corretoras/fluxo bruto
+  (so `/ranking` e o WS existem, sem UI) - o aviso fica disponivel pra quem
+  consumir o WS/`/ranking`, mas nao aparece visualmente no dashboard ainda.
+- Validado isolado (sem restart do servidor ao vivo): leitura real do CSV
+  atual confirma `tt_pausado=false`; simulacao com CSV sintetico de linhas
+  "RTD Pausado" confirma `tt_pausado=true` com `tt_pausado_desde` estavel
+  entre leituras consecutivas.
+
 ## 2026-09-21 — ConfluenceEngine: relaxa condicao de "acelerando"
 
 `backtest_confluencia.py` contra o `wdo_history.db` real (03/07 a 21/09) mostrou

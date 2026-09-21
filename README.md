@@ -50,6 +50,11 @@ paralelo com o Monitor WIN (porta **8001**) e com o sistema antigo
   Isso também tirou a dependência do RTD/Excel (`dados_macro_rtd.csv`)
   para o card MACRO — a planilha pode continuar gerando o arquivo, só não
   há mais consumidor Python dele.
+  **Em 21/09/2026 adicionado o Mini Índice (WIN, proxy `^BVSP` via
+  Yahoo — não há símbolo Yahoo pro futuro WIN em si)** como quinta perna
+  do card: bolsa brasileira sobe → apetite a risco atrai fluxo pro Brasil
+  → BRL se fortalece → **contrário** ao dólar (seta vermelha quando o
+  índice sobe, verde quando cai — mesmo sentido do Brent).
 - **Card CASADO** (27/08/2026, `casado_wdo.py`): preço justo do WDO por
   **arbitragem contra o dólar à vista**. `diferencial = WDO − pronto` (em
   pontos), `preço justo = pronto + carrego`, `desvio = WDO − preço justo`.
@@ -173,7 +178,7 @@ curl -X POST http://127.0.0.1:8003/niveis -H "Content-Type: application/json" -d
 | `/historico/{dia}` | GET | Pacote do pregão (OHLC, níveis, sinais, snapshots) p/ análise |
 | `/perfil/{dia}` | GET | Perfil de volume: POC, value area e histograma por preço (`?bucket=1.0`) |
 | `/ultimo` | GET    | Último tick recebido (debug rápido)        |
-| `/macro`  | GET    | Último pacote macro (Brent, DXY, Ouro, Juros EUA, casado) + idade |
+| `/macro`  | GET    | Último pacote macro (Brent, DXY, Ouro, Juros EUA, Mini Índice, casado) + idade |
 | `/casado` | GET    | Preço justo do WDO vs dólar à vista: diferencial, carrego, desvio, z-score |
 
 ## Perfil de volume (régua por acúmulo)
