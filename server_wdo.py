@@ -2176,29 +2176,42 @@ async def macro_loop():
           f" + mini indice via RTD + casado) a cada {MACRO_POLL}s")
     async with httpx.AsyncClient() as client:
         while True:
-            quotes = await macro.fetch_all(client)
-            mini_indice = macro_rtd.mini_indice()
-            await spot.fetch(client)
-            casado_pkg = await loop.run_in_executor(None, _calcular_casado_sync)
-            if casado_pkg:
-                last_casado = casado_pkg
-            if quotes or mini_indice or last_casado:
-                last_macro = {
-                    "evento": "macro",
-                    "brent": quotes.get("brent"),
-                    "dxy": quotes.get("dxy"),
-                    "ouro": quotes.get("ouro"),
-                    "juros_us": quotes.get("juros_us"),
-                    "mini_indice": mini_indice,
-                    "casado": last_casado,
-                    "ts": time.strftime("%H:%M:%S"),
-                }
-                await manager.broadcast(last_macro)
-                await loop.run_in_executor(
-                    None, db.save_macro_sync, quotes.get("brent"),
-                    quotes.get("dxy"), quotes.get("ouro"),
-                    quotes.get("juros_us"), last_casado,
-                    mini_indice)
+            try:
+                quotes = await macro.fetch_all(client)
+                mini_indice = macro_rtd.mini_indice()
+                await spot.fetch(client)
+                casado_pkg = await loop.run_in_executor(None, _calcular_casado_sync)
+                if casado_pkg:
+                    last_casado = casado_pkg
+                if quotes or mini_indice or last_casado:
+                    last_macro = {
+                        "evento": "macro",
+                        "brent": quotes.get("brent"),
+                        "dxy": quotes.get("dxy"),
+                        "ouro": quotes.get("ouro"),
+                        "juros_us": quotes.get("juros_us"),
+                        "mini_indice": mini_indice,
+                        "casado": last_casado,
+                        "ts": time.strftime("%H:%M:%S"),
+                    }
+                    await manager.broadcast(last_macro)
+                    await loop.run_in_executor(
+                        None, db.save_macro_sync, quotes.get("brent"),
+                        quotes.get("dxy"), quotes.get("ouro"),
+                        quotes.get("juros_us"), last_casado,
+                        mini_indice)
+            except Exception as e:
+                # Blindagem (mesmo padrao do market_loop, linha ~2109): sem isso
+                # um erro transitorio (ex.: "database is locked" - sqlite sob
+                # concorrencia com o market_loop) matava o loop pra sempre e
+                # o card MACRO/CASADO congelava em silencio (bug encontrado
+                # 22/09/2026 pelo usuario: card travado ~13:00 sem cair o
+                # resto do dashboard, so descoberto porque ele reparou que o
+                # CASADO nao batia mais).
+                import traceback
+                print(f"[WDO] ERRO no ciclo do macro_loop (seguindo): "
+                      f"{type(e).__name__}: {e}")
+                traceback.print_exc()
             await asyncio.sleep(MACRO_POLL)
 
 
