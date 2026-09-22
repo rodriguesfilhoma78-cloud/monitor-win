@@ -1,4 +1,5 @@
 Attribute VB_Name = "ModuloWDO"
+
 ' ============================================================
 '  ExportarWDO.bas - Modulo VBA para o Monitor WDO
 ' ------------------------------------------------------------
@@ -29,8 +30,27 @@ Attribute VB_Name = "ModuloWDO"
 '  O CSV e gravado na pasta do monitor: ajuste CAMINHO_CSV abaixo.
 '
 '  SERVIDOR: IniciarExportWDO tambem sobe o server_wdo.py em segundo
-'  plano (sem janela), caso a porta 8003 ainda nao esteja respondendo.
+'  plano (sem janela), caso a porta 8002 ainda nao esteja respondendo.
 '  Um server ja no ar NUNCA e reiniciado (preserva historico intradiario).
+'
+'  22/09/2026 - BUG CONHECIDO, NAO CORRIGIDO AO VIVO AINDA: URL_SERVIDOR
+'  abaixo aponta pra porta 8002, mas server_wdo.py escuta na 8003 (ver
+'  PORT em server_wdo.py). ServidorNoArWDO() portanto nunca acha o server
+'  já no ar e tenta subir outro a cada IniciarExportWDO - inofensivo ate
+'  agora porque o proprio "pythonw.exe" resolvido via PATH e' o stub da
+'  Microsoft Store, que falha em silencio quando chamado via WScript.Shell
+'  por automacao COM (mesma causa-raiz documentada abaixo). Uma correcao
+'  (trocar 8002->8003 e apontar pythonw pro caminho REAL do interpretador,
+'  tipo PYTHONW_REAL) foi tentada nesta sessao e quebrou a compilacao do
+'  modulo ao vivo (erro "Somente comentarios podem aparecer apos End Sub"
+'  logo apos adicionar os Consts PYTHONW_REAL/PYTHON_REAL) por motivo NAO
+'  diagnosticado - o bloco sozinho compila limpo isolado num modulo novo,
+'  mas falha especificamente dentro deste modulo com o resto do codigo
+'  dele junto. Isso derrubou o Excel (crash + autorecover) e ficou
+'  revertido pra essa versao simples (porta 8002, sem PYTHONW_REAL) de
+'  proposito. Antes de tentar de novo: isolar por bisseccao qual parte
+'  exata do bloco colide (ja descartado: nome duplicado de Sub/Const,
+'  caracteres nao-ASCII, Sub/End Sub desbalanceado - todos vieram limpos).
 '
 '  FLUXO (BOOK/FITA/VAP): este modulo le os topicos BOOK0/T&T0/VAP0 -
 '  os MESMOS que o WIN usava. Em 24/08/2026 o usuario reapontou essas
@@ -48,15 +68,24 @@ Option Explicit
 
 Private Const PASTA_MONITOR As String = "C:\Users\rodri\Desktop\Day trade\Dolar monitor"
 Private Const CAMINHO_CSV As String = "C:\Users\rodri\Desktop\Day trade\Dolar monitor\dados_wdo.csv"
-Private Const URL_SERVIDOR As String = "http://127.0.0.1:8003/ultimo"
+Private Const URL_SERVIDOR As String = "http://127.0.0.1:8002/ultimo"
 Private Const PLANILHA As String = "DADOS"
 Private Const ATIVO As String = "DOLFUT"   ' <== procurado na coluna A
 Private Const INTERVALO_SEG As Long = 2
 
-' --- Macro RTD (DI futuro + dolar) para o card MACRO --------------
-' Mesmo arquivo que o WIN ja exporta (ExportarWIN.bas): a lista de
-' tickers (DI1* + DOLFUT) nao mudou, so o consumidor (server_wdo.py)
-' agora tambem le esse CSV.
+' --- Macro RTD (DI futuro + DOLFUT + WINFUTV) para os cards MACRO/CASADO --
+' Ate 21/09/2026 este modulo NAO escrevia esse CSV (a suposicao era que o
+' Modulo1, ExportarWIN.bas, ja mantinha o arquivo fresco). Descoberto em
+' 22/09/2026 que o Modulo1 escreve na pasta monitor_win\ (o path original
+' dele, correto pro server_win.py) - NAO na pasta Dolar monitor\ que o
+' server_wdo.py le. Ou seja "Dolar monitor\dados_macro_rtd.csv" ficava
+' PARADO (ultima escrita real 24/08/2026) e o cupom implicito do card
+' CASADO rodava com DI desatualizado havia quase um mes, sem erro visivel.
+' Corrigido fazendo o proprio Modulo3 (WDO) escrever sua copia, no caminho
+' certo (ExportarMacroRTDWDO). Aproveitado pra incluir o WINFUTV (mini
+' indice, linha 14/coluna D "ULT" na aba DADOS) - server_wdo.py passa a
+' usar o preco REAL do WIN via RTD no card MACRO, em vez do proxy Yahoo
+' ^BVSP (Ibovespa a vista) usado ate entao.
 Private Const CAMINHO_CSV_MACRO As String = "C:\Users\rodri\Desktop\Day trade\Dolar monitor\dados_macro_rtd.csv"
 
 ' --- Fluxo: livro de ofertas (BOOK0) e fita (T&T0) -----------------
@@ -96,17 +125,7 @@ Public Sub IniciarExportWDO()
     Call ExportarWDO
 End Sub
 
-' Caminho REAL do interpretador (nao o alias "pythonw"/"python" do PATH,
-' que na verdade e' um stub da Microsoft Store em WindowsApps\ - esse stub
-' falha em silencio quando chamado via WScript.Shell.Run/automacao COM,
-' mesmo funcionando normal num terminal comum). Ajuste se o Python for
-' reinstalado em outro caminho (confira com "where pythonw" num terminal).
-Private Const PYTHONW_REAL As String = _
-    "C:\Users\rodri\AppData\Local\Python\pythoncore-3.14-64\pythonw.exe"
-Private Const PYTHON_REAL As String = _
-    "C:\Users\rodri\AppData\Local\Python\pythoncore-3.14-64\python.exe"
-
-' Sobe o server_wdo.py em segundo plano se a porta 8003 nao responder.
+' Sobe o server_wdo.py em segundo plano se a porta 8002 nao responder.
 ' Nao mexe em um server que ja esteja no ar.
 Public Sub IniciarServidorWDO()
     If ServidorNoArWDO() Then Exit Sub
@@ -116,27 +135,17 @@ Public Sub IniciarServidorWDO()
     sh.CurrentDirectory = PASTA_MONITOR
 
     On Error Resume Next
-    ' pythonw = roda sem janela de console. Usa o caminho REAL (ver nota
-    ' acima) - o "pythonw.exe" cru (resolvido via PATH) e' um alias que
-    ' falha em silencio quando chamado por automacao COM.
-    If Dir(PYTHONW_REAL) <> "" Then
-        sh.Run """" & PYTHONW_REAL & """ """ & PASTA_MONITOR & "\server_wdo.py""", 0, False
-    Else
-        sh.Run "pythonw.exe """ & PASTA_MONITOR & "\server_wdo.py""", 0, False
-    End If
+    ' pythonw = roda sem janela de console
+    sh.Run "pythonw.exe """ & PASTA_MONITOR & "\server_wdo.py""", 0, False
     If Err.Number <> 0 Then
         Err.Clear
-        ' fallback: caminho real do python.exe (janela oculta pelo modo 0)
-        If Dir(PYTHON_REAL) <> "" Then
-            sh.Run """" & PYTHON_REAL & """ """ & PASTA_MONITOR & "\server_wdo.py""", 0, False
-        Else
-            sh.Run "python.exe """ & PASTA_MONITOR & "\server_wdo.py""", 0, False
-        End If
+        ' fallback caso pythonw nao esteja no PATH (janela oculta)
+        sh.Run "python.exe """ & PASTA_MONITOR & "\server_wdo.py""", 0, False
     End If
     On Error GoTo 0
 End Sub
 
-' Testa se o servidor responde na porta 8003 (timeout de 500ms).
+' Testa se o servidor responde na porta 8002 (timeout de 500ms).
 Private Function ServidorNoArWDO() As Boolean
     Dim http As Object
     On Error GoTo Fora
@@ -208,12 +217,10 @@ Public Sub ExportarWDO()
     Print #fnum, linha
     Close #fnum
 
-    ' ExportarMacroRTD NAO e repetido aqui: o Modulo1 (WIN, ExportarWIN.bas)
-    ' ja mantem dados_macro_rtd.csv fresco (DI1* + DOLFUT) a cada ciclo; as
-    ' duas macros escreveriam o MESMO conteudo, entao so uma roda. Se um dia
-    ' o WDO rodar sozinho (sem o Modulo1 do WIN no ar), esse CSV fica parado
-    ' e o server_wdo.py trata como desatualizado sozinho (RTD_MAX_AGE) -
-    ' nao quebra, so envelhece o card MACRO.
+    ' 22/09/2026: passou a rodar aqui tambem - ver comentario na declaracao
+    ' de CAMINHO_CSV_MACRO acima (o Modulo1 escrevia esse CSV na pasta
+    ' ERRADA para o WDO).
+    Call ExportarMacroRTDWDO(ws)
     Call ExportarFluxo(ws)
 
     ciclosAcum = ciclosAcum + 1
@@ -227,6 +234,36 @@ Reagendar:
         proximaExecucao = Now + TimeSerial(0, 0, INTERVALO_SEG)
         Application.OnTime proximaExecucao, "ExportarWDO"
     End If
+End Sub
+
+' Exporta DI futuros (DI1*), DOLFUT e WINFUTV (mini indice) para
+' dados_macro_rtd.csv - ver comentario na declaracao de CAMINHO_CSV_MACRO
+' acima. Colunas fixas (D=4 ultimo, H=8 fec_ant, J=10 volume), mesmo
+' desenho simples do Modulo1 (sem ColPorCampoWDO): nunca derruba o export
+' principal se a planilha nao tiver os tickers esperados.
+Private Sub ExportarMacroRTDWDO(ws As Worksheet)
+    Dim r As Long
+    Dim fnum As Integer
+    Dim tk As String
+    Dim linhas As String
+    On Error GoTo Fim
+    For r = 1 To 100
+        tk = Trim(CStr(ws.Cells(r, 1).Value))
+        If tk Like "DI1*" Or tk = "DOLFUT" Or tk = "WINFUTV" Then
+            linhas = linhas & tk & ";" & _
+                NumBR(ws.Cells(r, 4).Value) & ";" & _
+                NumBR(ws.Cells(r, 8).Value) & ";" & _
+                NumBR(ws.Cells(r, 10).Value) & ";" & _
+                Format(Now, "hh:nn:ss") & vbCrLf
+        End If
+    Next r
+    If Len(linhas) = 0 Then Exit Sub
+    fnum = FreeFile
+    Open CAMINHO_CSV_MACRO For Output As #fnum
+    Print #fnum, "ticker;ultimo;fec_ant;volume;timestamp"
+    Print #fnum, linhas;
+    Close #fnum
+Fim:
 End Sub
 
 ' ================= FLUXO: BOOK0 (livro) e T&T0 (fita) =================
@@ -484,3 +521,7 @@ Private Function NumBR(v As Variant) As String
         NumBR = ""
     End If
 End Function
+
+
+
+

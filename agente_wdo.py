@@ -79,8 +79,8 @@ Regras de leitura especificas deste sistema (nao invente numeros fora delas):
   cite-os quando relevantes, nao os recalcule.
 - macro (brent_var_pct, dxy_var_pct, ouro_var_pct, juros_us_var_bps,
   mini_indice_var_pct) e o pano de fundo do dia (petroleo, cambio global,
-  ouro, juros americano, bolsa brasileira via ^BVSP como proxy do WIN) -
-  NAO e o WDO, e contexto.
+  ouro, juros americano, preco real do WIN via RTD/Excel - ate 21/09/2026
+  era proxy ^BVSP/Yahoo, trocado em 22/09/2026) - NAO e o WDO, e contexto.
   macro.alinhamento_com_wdo ja aplica a polaridade calibrada pro dolar
   (recalibrada 24/08, 25/08, 17/09 e 21/09/2026): Brent sobe = CONTRARIO
   (Brasil exportador de petroleo, BRL tende a se fortalecer); DXY sobe =
@@ -190,9 +190,9 @@ def _alinhamento_macro(macro: dict, tick) -> Optional[dict]:
     - Ouro sobe = FAVORAVEL ao dolar (sinal INVERTIDO em 17/09/2026).
     - Juros EUA (UST 10Y) sobem = CONTRARIO ao dolar (sinal INVERTIDO em
       17/09/2026).
-    - Mini Índice (WIN, proxy ^BVSP) sobe = CONTRARIO ao dolar (apetite a
-      risco atrai fluxo pro Brasil, BRL se fortalece - adicionado
-      21/09/2026).
+    - Mini Índice (WIN, preco real via RTD/Excel) sobe = CONTRARIO ao dolar
+      (apetite a risco atrai fluxo pro Brasil, BRL se fortalece - adicionado
+      21/09/2026 como proxy ^BVSP/Yahoo, trocado 22/09/2026 pro RTD).
     (faixas mortas identicas as do banner para nao virar ruido em sinal)."""
     sinais = []
     brent = macro.get("brent") or {}

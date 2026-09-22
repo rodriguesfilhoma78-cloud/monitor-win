@@ -117,13 +117,20 @@ PREGAO_FECHA_APOS   = "17:45"    # ultimo tick tem que vir depois disso
 #
 # Em 21/09/2026 adicionado o MINI INDICE (WIN) como quinta perna do card
 # MACRO, a pedido do usuario. Nao ha simbolo Yahoo pro futuro WIN em si;
-# usa-se ^BVSP (Ibovespa a vista, o ativo-objeto do WIN) como proxy - mesmo
-# desenho do Brent como proxy de termo de troca. Polaridade CONTRARIA ao
+# ate 22/09/2026 usava-se ^BVSP (Ibovespa a vista, o ativo-objeto do WIN)
+# como proxy - mesmo desenho do Brent como proxy de termo de troca. Em
+# 22/09/2026 trocado pelo preco REAL do WIN via RTD/Excel (linha WINFUTV
+# em dados_macro_rtd.csv, exportada por ExportarMacroRTDWDO no
+# ExportarWDO.bas - ver MacroRtdReader.mini_indice() mais abaixo), a
+# pedido do usuario: mais fiel que o Ibovespa a vista, que so aproxima o
+# futuro. MACRO_SYMBOLS por isso NAO tem mais entrada "mini_indice" -
+# so os 4 outros continuam vindo do Yahoo. Polaridade CONTRARIA ao
 # DOLFUT (mesmo sentido do Brent): bolsa brasileira sobe = apetite a risco
 # por ativos locais, fluxo de dolar ENTRA no Brasil -> BRL se fortalece ->
 # DOLFUT tende a CAIR. Por isso indice SOBE = seta vermelha/contraria ao
 # dolar, indice CAI = seta verde/favoravel (ver renderMacro() no
-# dashboard_wdo.html e _alinhamento_macro() no agente_wdo.py).
+# dashboard_wdo.html e _alinhamento_macro() no agente_wdo.py) - a
+# polaridade nao mudou, so a fonte do preco.
 YAHOO_CHART   = ("https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                  "?range=1d&interval=15m")
 MACRO_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -135,7 +142,7 @@ MACRO_POLL    = 30                            # segundos entre consultas
 # emergentes"). O card MACRO nao foi recalibrado para essa polaridade -
 # ver ressalva no README.
 MACRO_SYMBOLS = {"brent": "BZ=F", "dxy": "DX-Y.NYB", "ouro": "GC=F",
-                  "juros_us": "^TNX", "mini_indice": "^BVSP"}
+                  "juros_us": "^TNX"}
 
 # --- CASADO: preco justo do WDO vs dolar a vista (Caminho A, 27/08/2026) --
 # dolar a vista (dolar comercial): AwesomeAPI, sem chave, cache de ~1 min.
@@ -826,12 +833,17 @@ class SpotFetcher:
 
 
 class MacroRtdReader:
-    """Le o DI curto de dados_macro_rtd.csv (DI1*/DOLFUT via RTD/Excel).
+    """Le o DI curto e o WINFUTV (mini indice) de dados_macro_rtd.csv
+    (DI1*/DOLFUT/WINFUTV via RTD/Excel - ver ExportarMacroRTDWDO no
+    ExportarWDO.bas).
 
-    Cache por mtime (mesmo padrao do CsvReader). So o DI interessa aqui -
-    o card MACRO nao depende mais deste arquivo. Escolhe o contrato DI1 de
-    menor vencimento futuro como proxy do juro domestico ate o vencimento
-    do WDO (tenor curto, a curva quase nao inclina nesse trecho).
+    Cache por mtime (mesmo padrao do CsvReader). O DI alimenta o cupom
+    implicito do card CASADO (contrato DI1 de menor vencimento futuro,
+    proxy do juro domestico ate o vencimento do WDO). O WINFUTV
+    (adicionado 22/09/2026, a pedido do usuario) virou a fonte do mini
+    indice no card MACRO - preco REAL do futuro via RTD, no lugar do
+    proxy Yahoo ^BVSP (Ibovespa a vista) usado antes por falta de ticker
+    Yahoo pro proprio WIN.
     """
 
     def __init__(self, path: Path):
@@ -839,6 +851,7 @@ class MacroRtdReader:
         self._mtime = 0.0
         self._di_anual: Optional[float] = None
         self._di_ticker: Optional[str] = None
+        self._mini_indice: Optional[dict] = None
 
     def _venc_di(self, tk: str) -> Optional[date]:
         try:
@@ -848,33 +861,57 @@ class MacroRtdReader:
         except (ValueError, IndexError):
             return None
 
-    def di_anual(self) -> Optional[float]:
-        """Taxa DI curta em fracao (0.1389). None se o arquivo sumiu."""
+    def _load(self) -> None:
         if not self.path.exists():
-            return None
+            return
         mtime = self.path.stat().st_mtime
         if mtime == self._mtime:
-            return self._di_anual
+            return
         self._mtime = mtime
         try:
             with open(self.path, encoding="utf-8-sig", errors="ignore") as f:
                 rows = list(csv.reader(f, delimiter=";"))
         except (PermissionError, OSError):
-            return self._di_anual
+            return
         hoje = date.today()
         melhor: tuple = (None, None)     # (venc, taxa)
         for row in rows:
-            if len(row) < 2 or not row[0].upper().startswith("DI1"):
+            if len(row) < 2:
                 continue
-            venc = self._venc_di(row[0].strip())
-            taxa = _to_float(row[1])
-            if venc is None or taxa is None or venc <= hoje:
-                continue
-            if melhor[0] is None or venc < melhor[0]:
-                melhor = (venc, taxa)
-                self._di_ticker = row[0].strip()
+            tk = row[0].strip().upper()
+            if tk.startswith("DI1"):
+                venc = self._venc_di(row[0].strip())
+                taxa = _to_float(row[1])
+                if venc is None or taxa is None or venc <= hoje:
+                    continue
+                if melhor[0] is None or venc < melhor[0]:
+                    melhor = (venc, taxa)
+                    self._di_ticker = row[0].strip()
+            elif tk == "WINFUTV" and len(row) >= 3:
+                preco = _to_float(row[1])
+                fech_ant = _to_float(row[2])
+                if preco is not None and fech_ant:
+                    self._mini_indice = {
+                        "preco": preco,
+                        "fech_ant": fech_ant,
+                        "var_pct": round((preco / fech_ant - 1) * 100, 2),
+                        "ts": row[4].strip() if len(row) > 4 else time.strftime("%H:%M:%S"),
+                    }
         self._di_anual = (melhor[1] / 100.0) if melhor[1] is not None else None
+
+    def di_anual(self) -> Optional[float]:
+        """Taxa DI curta em fracao (0.1389). None se o arquivo sumiu."""
+        self._load()
         return self._di_anual
+
+    def mini_indice(self) -> Optional[dict]:
+        """Preco real do WIN via RTD (ULT/FEC da linha WINFUTV da planilha),
+        no mesmo formato do MacroFetcher.fetch_symbol (preco/fech_ant/
+        var_pct/ts) - assim o resto do pipeline (WS, SQLite, agente_wdo)
+        nao precisa saber de onde veio a cotacao. None se o arquivo sumiu
+        ou nunca teve uma linha WINFUTV valida (Excel fechado, por ex.)."""
+        self._load()
+        return self._mini_indice
 
 
 # ----------------------------------------------------------------
@@ -2126,8 +2163,9 @@ def _calcular_casado_sync() -> Optional[dict]:
 
 
 async def macro_loop():
-    """Loop paralelo: Brent + DXY + Ouro + Juros EUA + Mini Indice (Yahoo)
-    + CASADO (dolar a vista via AwesomeAPI vs ultimo do WDO).
+    """Loop paralelo: Brent + DXY + Ouro + Juros EUA (Yahoo) + Mini Indice
+    (RTD/Excel, WINFUTV) + CASADO (dolar a vista via AwesomeAPI vs ultimo
+    do WDO).
 
     Transmite o pacote consolidado via WS a cada MACRO_POLL segundos e
     persiste no SQLite para estudo de correlacao com o WDO.
@@ -2135,22 +2173,23 @@ async def macro_loop():
     global last_macro, last_casado
     loop = asyncio.get_running_loop()
     print(f"[WDO] Macro loop iniciado ({', '.join(MACRO_SYMBOLS.values())}"
-          f" + casado) a cada {MACRO_POLL}s")
+          f" + mini indice via RTD + casado) a cada {MACRO_POLL}s")
     async with httpx.AsyncClient() as client:
         while True:
             quotes = await macro.fetch_all(client)
+            mini_indice = macro_rtd.mini_indice()
             await spot.fetch(client)
             casado_pkg = await loop.run_in_executor(None, _calcular_casado_sync)
             if casado_pkg:
                 last_casado = casado_pkg
-            if quotes or last_casado:
+            if quotes or mini_indice or last_casado:
                 last_macro = {
                     "evento": "macro",
                     "brent": quotes.get("brent"),
                     "dxy": quotes.get("dxy"),
                     "ouro": quotes.get("ouro"),
                     "juros_us": quotes.get("juros_us"),
-                    "mini_indice": quotes.get("mini_indice"),
+                    "mini_indice": mini_indice,
                     "casado": last_casado,
                     "ts": time.strftime("%H:%M:%S"),
                 }
@@ -2159,7 +2198,7 @@ async def macro_loop():
                     None, db.save_macro_sync, quotes.get("brent"),
                     quotes.get("dxy"), quotes.get("ouro"),
                     quotes.get("juros_us"), last_casado,
-                    quotes.get("mini_indice"))
+                    mini_indice)
             await asyncio.sleep(MACRO_POLL)
 
 

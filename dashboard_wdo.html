@@ -572,9 +572,11 @@ function renderMacro(){
   //     pedido do usuario)
   //   Juros EUA↑ -> contra o dolar (polaridade INVERTIDA em 17/09/2026 a
   //     pedido do usuario)
-  //   Mini Índice (WIN, proxy ^BVSP)↑ -> apetite a risco/fluxo entra no
-  //     Brasil -> BRL se fortalece -> contra o dolar (adicionado
-  //     21/09/2026 a pedido do usuario: positivo = seta negativa)
+  //   Mini Índice (WIN, preço real via RTD)↑ -> apetite a risco/fluxo entra
+  //     no Brasil -> BRL se fortalece -> contra o dolar (adicionado
+  //     21/09/2026 a pedido do usuario como proxy ^BVSP/Yahoo; trocado em
+  //     22/09/2026 pro preço real do WIN via RTD/Excel: positivo = seta
+  //     negativa, polaridade nao mudou)
   // Faixa morta evita ruído virar seta.
   const imp = [];   // +1 favorável ao dolar, -1 contrário, 0 neutro
   const rows = [];
@@ -615,13 +617,14 @@ function renderMacro(){
       <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.juros_us.preco,3)}% ${v==null?"":(v>=0?"+":"")+fmt2(v,1)+" bps"}</b>${seta(s)}</div>`);
   }
   if(M.mini_indice){
-    // Mini Índice (WIN, proxy ^BVSP): CONTRARIO ao dolar, mesmo sentido do
-    // Brent - bolsa sobe = apetite a risco/fluxo entra no Brasil = BRL mais
-    // forte. Legenda segue a direção BRUTA do índice; a seta (s) inverte
-    // pra mostrar o impacto no DOLFUT (positivo = seta vermelha/negativa).
+    // Mini Índice (WIN, preço real via RTD/Excel): CONTRARIO ao dolar,
+    // mesmo sentido do Brent - bolsa sobe = apetite a risco/fluxo entra no
+    // Brasil = BRL mais forte. Legenda segue a direção BRUTA do índice; a
+    // seta (s) inverte pra mostrar o impacto no DOLFUT (positivo = seta
+    // vermelha/negativa).
     const v = M.mini_indice.var_pct, s = Math.abs(v)<0.1 ? 0 : (v>0?-1:1);
     imp.push(s);
-    rows.push(`<div class="macro-row"><span class="nome">📈 Mini Índice<small>^BVSP · Yahoo</small></span>
+    rows.push(`<div class="macro-row"><span class="nome">📈 Mini Índice<small>WINFUT · RTD</small></span>
       <b class="${v>0?"up":v<0?"down":"flat"}">${fmt2(M.mini_indice.preco,0)} ${v>=0?"+":""}${fmt2(v)}%</b>${seta(s)}</div>`);
   }
   $("macroRows").innerHTML = rows.join("");

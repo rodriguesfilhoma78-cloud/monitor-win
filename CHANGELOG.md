@@ -11,6 +11,38 @@ Histórico do que foi feito, mais recente primeiro.
 Notas de sessão detalhadas: `Sessão 2026-08-24 — Criação do Monitor WDO.md`
 na pasta `Day trade` (vault Obsidian).
 
+## 2026-09-22 — Mini Indice (WIN) passa a usar preco real via RTD/Excel
+
+A pedido do usuario, trocado o proxy `^BVSP` (Ibovespa a vista, Yahoo) pelo
+preco REAL do futuro WIN (WINFUTV), lido via RTD do Profit Pro na mesma
+planilha `WDO_Master_RTD.xlsm`. A linha WINFUTV ja existia na aba DADOS com
+RTD completo (mesmo layout de DOLFUT); so faltava exportar.
+
+- `ExportarWDO.bas` (Modulo3 ao vivo): nova `ExportarMacroRTDWDO()`, chamada
+  de dentro de `ExportarWDO()`, escreve `dados_macro_rtd.csv` com DI1*/DOLFUT/
+  WINFUTV (colunas fixas D=ultimo, H=fec_ant, J=volume). Corrige de quebra um
+  bug preexistente: esse CSV vinha sendo escrito pelo Modulo1 (WIN) na pasta
+  `monitor_win\`, NAO na pasta `Dolar monitor\` que o `server_wdo.py` le -
+  o arquivo certo ficou parado desde 24/08/2026 e o cupom implicito do card
+  CASADO rodava com DI desatualizado havia quase um mes sem erro visivel.
+- `server_wdo.py`: `MacroRtdReader` ganhou `mini_indice()` (preco/fech_ant/
+  var_pct/ts a partir da linha WINFUTV), no mesmo formato do
+  `MacroFetcher.fetch_symbol()`. `MACRO_SYMBOLS` perdeu a entrada
+  `"mini_indice": "^BVSP"` (nao busca mais no Yahoo); `macro_loop()` usa
+  `macro_rtd.mini_indice()` no lugar de `quotes.get("mini_indice")`.
+- `dashboard_wdo.html` / `agente_wdo.py`: comentarios e a legenda do card
+  (`WINFUT · RTD` no lugar de `^BVSP · Yahoo`) atualizados; polaridade
+  (indice sobe = contrario ao dolar) nao mudou, so a fonte do preco.
+- **Pendente, NAO aplicado ao vivo**: o `IniciarServidorWDO()` do mesmo
+  modulo aponta pra porta 8002 (devia ser 8003) e usa `pythonw.exe` cru (via
+  PATH, que e' o stub da Microsoft Store e falha em silencio via automacao
+  COM) em vez do caminho real do interpretador. Uma tentativa de corrigir os
+  dois no mesmo modulo, na mesma sessao, quebrou a compilacao do VBA ao vivo
+  por um motivo nao diagnosticado (o bloco sozinho compila limpo isolado,
+  mas nao dentro deste modulo) e derrubou o Excel (crash + autorecover,
+  ~15-30min de RTD parado nos dois monitores ate reabrir). Revertido de
+  proposito - ver comentario detalhado no `ExportarWDO.bas`.
+
 ## 2026-09-21 — Mini Indice (WIN) adicionado ao card MACRO
 
 A pedido do usuario, quinta perna do card MACRO: Mini Indice, usando `^BVSP`
